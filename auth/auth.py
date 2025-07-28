@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta
-from jose import JWTError, jwt
+from jose import JWTError, jwt, ExpiredSignatureError
 from passlib.context import CryptContext
+from fastapi import HTTPException, status
 from typing import Optional
 
 # Chave secreta e algoritmo
-SECRET_KEY = "4RAtt9Xu7CcRnHFCwdd4oFzrUmL8D8eFnLgf8vzxFr9PWTVrYjvVYBEn8mLCebRb" 
+SECRET_KEY = "4RAtt9Xu7CcRnHFCwdd4oFzrUmL8D8eFnLgf8vzxFr9PWTVrYjvVYBEn8mLCebRb"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24h
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 horas
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -28,7 +29,21 @@ def verificar_token(token: str):
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
-            raise ValueError("Token sem ID de usuário")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token sem ID de usuário",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return int(user_id)
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expirado",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     except JWTError:
-        raise ValueError("Token inválido")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token inválido",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
