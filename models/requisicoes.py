@@ -26,7 +26,7 @@ class Requisicao(Base):
     atualizado_por = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     # ✅ Relacionamentos melhorados
-    robo = relationship("Robos", back_populates="requisicoes")
+    robo = relationship("Robo", back_populates="requisicoes")
     criador = relationship("User", foreign_keys=[criado_por])
     atualizador = relationship("User", foreign_keys=[atualizado_por])
 
