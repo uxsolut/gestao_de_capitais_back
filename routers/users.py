@@ -8,7 +8,7 @@ from typing import List
 from database import get_db
 from models.users import User
 from schemas.users import User as UserSchema, UserCreate, UserLogin
-from auth.dependencies import get_current_user  # ✅ Importar função que valida JWT
+from auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -46,8 +46,7 @@ def criar_user(item: UserCreate, db: Session = Depends(get_db)):
         email=item.email,
         senha=hashed_password,
         cpf=item.cpf,
-        id_conta=item.id_conta,
-        tipo_de_user=item.tipo_de_user  # ✅ novo campo
+        tipo_de_user=item.tipo_de_user
     )
 
     db.add(novo_user)
@@ -75,8 +74,7 @@ def login_user(item: UserLogin, db: Session = Depends(get_db)):
             "nome": user.nome,
             "email": user.email,
             "cpf": user.cpf,
-            "id_conta": user.id_conta,
-            "tipo_de_user": user.tipo_de_user 
+            "tipo_de_user": user.tipo_de_user
         }
     }
 
@@ -84,6 +82,6 @@ def login_user(item: UserLogin, db: Session = Depends(get_db)):
 @router.get("/", response_model=List[UserSchema])
 def listar_users(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user), 
+    current_user: User = Depends(get_current_user),
 ):
     return db.query(User).all()
