@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+python-multipart
+pydantic[email]
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.0
+python-jose
+prometheus-fastapi-instrumentator
+prometheus-client
+redis
+pytest
+pytest-asyncio
+httpx
+
