@@ -2,6 +2,7 @@ from sqlalchemy import (Column, Integer, ForeignKey, LargeBinary, Boolean, DateT
 from database import Base
 from sqlalchemy.orm import relationship
 from datetime import datetime
+from sqlalchemy.orm import declared_attr
 
 class RobosDoUser(Base):
     __tablename__ = "robos_do_user"
@@ -31,7 +32,6 @@ class RobosDoUser(Base):
 
     # ✅ Relacionamentos melhorados
     user = relationship("User", foreign_keys=[id_user], back_populates="robos_do_user")
-    robo = relationship("Robos", back_populates="robos_do_user")
     carteira = relationship("Carteira")
     conta = relationship("Conta")
     
@@ -46,4 +46,8 @@ class RobosDoUser(Base):
     def is_operacional(self):
         """Verifica se o robô está operacional (ligado e ativo)"""
         return self.ligado and self.ativo and self.status == "ativo"
+    
+    @declared_attr
+    def robo(cls):
+        return relationship("Robos", back_populates="robos_do_user")
 
