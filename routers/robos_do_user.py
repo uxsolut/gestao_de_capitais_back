@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from models.robos_do_user import RobosDoUser
 from schemas.robos_do_user import RoboDoUser
-from models.robos import Robos
+from models.robos import Robo
 from models.users import User
 from auth.dependencies import get_db, get_current_user
 
@@ -53,7 +53,7 @@ def criar_robo_do_user(
             )
 
     # Busca o arquivo_user do robô
-    robo = db.query(Robos).filter(Robos.id == id_robo).first()
+    robo = db.query(Robo).filter(Robo.id == id_robo).first()
     if not robo:
         raise HTTPException(status_code=404, detail="Robô não encontrado.")
 

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from models.robos import Robo
-from schemas.robos import RoboCreate, Robo as RoboSchema
+from schemas.robos import RobosCreate, Robos as RoboSchema
 from auth.dependencies import get_db, get_current_user
 from models.users import User
 from services.cache_service import cache_result, cache_service

@@ -3,7 +3,7 @@ from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
 
-class Robos(Base):
+class Robo(Base):
     __tablename__ = "robos"
 
     id = Column(Integer, primary_key=True, index=True)
