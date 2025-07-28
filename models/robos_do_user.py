@@ -2,6 +2,7 @@ from sqlalchemy import (Column, Integer, ForeignKey, LargeBinary, Boolean, DateT
 from database import Base
 from sqlalchemy.orm import relationship
 from datetime import datetime
+from models.robos import Robo
 
 class RobosDoUser(Base):
     __tablename__ = "robos_do_user"
@@ -33,7 +34,7 @@ class RobosDoUser(Base):
     user = relationship("User", foreign_keys=[id_user], back_populates="robos_do_user")
     carteira = relationship("Carteira")
     conta = relationship("Conta")
-    robo = relationship("Robo", back_populates="robos_do_user")
+    robo = relationship(Robo, back_populates="robos_do_user")
     
     # ✅ Relacionamentos de auditoria
     criador = relationship("User", foreign_keys=[criado_por])
