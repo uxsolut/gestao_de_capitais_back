@@ -21,7 +21,6 @@ class Requisicao(Base):
 
     # Relacionamentos existentes no banco
     robo = relationship("Robo", back_populates="requisicoes", foreign_keys=[id_robo])
-    ativo = relationship("Ativo", foreign_keys=[id_ativo])
 
     def __repr__(self):
         return f"<Requisicao(id={self.id}, tipo='{self.tipo}')>"
