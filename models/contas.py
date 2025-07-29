@@ -59,4 +59,6 @@ class Conta(Base):
         return (self.ativa and 
                 self.status == "ativa" and 
                 self.margem_livre >= valor_necessario)
+    
+    robos_do_user = relationship("RobosDoUser", back_populates="conta")
 
