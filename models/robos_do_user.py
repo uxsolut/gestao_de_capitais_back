@@ -1,49 +1,27 @@
-from sqlalchemy import (Column, Integer, ForeignKey, LargeBinary, Boolean, DateTime, String)
-from database import Base
+from sqlalchemy import Column, Integer, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
-from datetime import datetime
-from models.robos import Robo
+from database import Base
 
 class RobosDoUser(Base):
     __tablename__ = "robos_do_user"
 
     id = Column(Integer, primary_key=True, index=True)
-    id_user = Column(Integer, ForeignKey("users.id"), nullable=False)
-    id_robo = Column(Integer, ForeignKey("robos.id"), nullable=False)
-    arquivo_cliente = Column(LargeBinary, nullable=True)
+    id_robo = Column(Integer, ForeignKey("robos.id", ondelete="CASCADE"), nullable=False)
+    ligado = Column(Boolean, default=False)
+    ativo = Column(Boolean, default=False)
+    tem_requisicao = Column(Boolean, default=False)
 
-    # ✅ Status padronizados com enum-like approach
-    ligado = Column(Boolean, default=False, nullable=False)
-    ativo = Column(Boolean, default=False, nullable=False)
-    tem_requisicao = Column(Boolean, default=False, nullable=False)
-    
-    # ✅ Status geral para controle de estado
-    status = Column(String(20), default="inativo", nullable=False)  # inativo, ativo, pausado, erro
+    id_ordem = Column(Integer, ForeignKey("ordens.id", ondelete="SET NULL"), nullable=True)
+    id_carteira = Column(Integer, ForeignKey("carteiras.id", ondelete="SET NULL"), nullable=True)
+    id_conta = Column(Integer, ForeignKey("contas.id", ondelete="SET NULL"), nullable=True)
+    id_aplicacao = Column(Integer, ForeignKey("aplicacao.id", ondelete="SET NULL"), nullable=True)
+    id_user = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
-    # ✅ Relacionamentos simplificados - removido relacionamento circular com Ordem
-    id_carteira = Column(Integer, ForeignKey("carteiras.id"), nullable=True)
-    id_conta = Column(Integer, ForeignKey("contas.id"), nullable=True)
-
-    # ✅ Campos de auditoria adicionados
-    criado_em = Column(DateTime, default=datetime.utcnow, nullable=False)
-    atualizado_em = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    criado_por = Column(Integer, ForeignKey("users.id"), nullable=True)
-    atualizado_por = Column(Integer, ForeignKey("users.id"), nullable=True)
-
-    # ✅ Relacionamentos melhorados
-    user = relationship("User", foreign_keys=[id_user], back_populates="robos_do_user")
-    carteira = relationship("Carteira")
-    conta = relationship("Conta")
-    robo = relationship(Robo, back_populates="robos_do_user")
-    
-    # ✅ Relacionamentos de auditoria
-    criador = relationship("User", foreign_keys=[criado_por])
-    atualizador = relationship("User", foreign_keys=[atualizado_por])
+    # Relacionamentos
+    robo = relationship("Robo", back_populates="robos_do_user")
+    carteira = relationship("Carteira", back_populates="robos_do_user")
+    user = relationship("User", back_populates="robos_do_user")
+    ordem = relationship("Ordem", back_populates="robo_user", foreign_keys="[RobosDoUser.id_ordem]")
 
     def __repr__(self):
-        return f"<RobosDoUser(id={self.id}, user_id={self.id_user}, robo_id={self.id_robo}, status='{self.status}')>"
-
-    @property
-    def is_operacional(self):
-        """Verifica se o robô está operacional (ligado e ativo)"""
-        return self.ligado and self.ativo and self.status == "ativo"
+        return f"<RobosDoUser(id={self.id}, ligado={self.ligado}, ativo={self.ativo})>"
