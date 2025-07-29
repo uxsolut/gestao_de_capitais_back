@@ -33,9 +33,6 @@ class Conta(Base):
     corretora = relationship("Corretora", back_populates="contas")
     carteira = relationship("Carteira", back_populates="contas")
     
-    # ✅ Relacionamento com ordens
-    ordens = relationship("Ordem", foreign_keys="[Ordem.id_conta]", back_populates="conta")
-    
     # ✅ Relacionamentos de auditoria
     criador = relationship("User", foreign_keys=[criado_por])
     atualizador = relationship("User", foreign_keys=[atualizado_por])
