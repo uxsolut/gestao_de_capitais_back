@@ -34,10 +34,3 @@ class User(Base):
         for carteira in self.carteiras:
             contas.extend([conta for conta in carteira.contas if conta.ativa])
         return contas
-
-    ordens_criadas = relationship(
-      "Ordem",
-      foreign_keys="[Ordem.criado_por]",
-      overlaps="criador"
-    )
-
