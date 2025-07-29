@@ -20,3 +20,4 @@ class Aplicacao(Base):
     atualizado_em = Column(DateTime, server_default=func.current_timestamp(), onupdate=func.current_timestamp())
 
     projeto = relationship("Projeto", back_populates="aplicacoes")
+    robos_do_user = relationship("RobosDoUser", back_populates="aplicacao")
