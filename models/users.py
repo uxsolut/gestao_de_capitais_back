@@ -19,10 +19,6 @@ class User(Base):
     ordens = relationship("Ordem", foreign_keys="[Ordem.id_user]", back_populates="user")
     robos_do_user = relationship("RobosDoUser", foreign_keys="[RobosDoUser.id_user]", back_populates="user")
     carteiras = relationship("Carteira", back_populates="user", cascade="all, delete-orphan")
-    
-    # ✅ Relacionamentos criados por este usuário (auditoria reversa)
-    requisicoes_criadas = relationship("Requisicao", foreign_keys="[Requisicao.criado_por]")
-    ordens_criadas = relationship("Ordem", foreign_keys="[Ordem.criado_por]")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', tipo='{self.tipo_de_user}')>"
@@ -38,4 +34,15 @@ class User(Base):
         for carteira in self.carteiras:
             contas.extend([conta for conta in carteira.contas if conta.ativa])
         return contas
+    
+    requisicoes_criadas = relationship(
+      "Requisicao",
+      foreign_keys="[Requisicao.criado_por]",
+      overlaps="criador"
+    )
+    ordens_criadas = relationship(
+      "Ordem",
+      foreign_keys="[Ordem.criado_por]",
+      overlaps="criador"
+    )
 
