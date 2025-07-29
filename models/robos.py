@@ -24,7 +24,7 @@ class Robo(Base):
 
     # ✅ Relacionamentos melhorados
     robos_do_user = relationship("RobosDoUser", back_populates="robo")
-    requisicoes = relationship("Requisicao", back_populates="robo")  # ✅ Relacionamento com requisições
+    requisicoes = relationship("Requisicao", back_populates="robo")
     
     # ✅ Relacionamentos de auditoria
     criador = relationship("User", foreign_keys=[criado_por])
@@ -37,8 +37,4 @@ class Robo(Base):
     def usuarios_ativos(self):
         """Retorna o número de usuários ativos usando este robô"""
         return len([r for r in self.robos_do_user if r.is_operacional])
-
-    def get_requisicoes_pendentes(self):
-        """Retorna requisições não aprovadas para este robô"""
-        return [r for r in self.requisicoes if not r.aprovado]
 
