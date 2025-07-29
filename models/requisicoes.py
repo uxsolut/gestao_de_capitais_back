@@ -18,6 +18,7 @@ class Requisicao(Base):
 
     criado_em = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+
     # Relacionamentos existentes no banco
     robo = relationship("Robo", back_populates="requisicoes", foreign_keys=[id_robo])
     ativo = relationship("Ativo", foreign_keys=[id_ativo])
