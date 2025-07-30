@@ -5,6 +5,8 @@ from database import engine, Base
 from prometheus_fastapi_instrumentator import Instrumentator
 from config import settings
 from middleware.error_handler import ErrorHandlerMiddleware
+from dotenv import load_dotenv
+load_dotenv()
 
 from models import corretoras  
 from routers import robos, users, robos_do_user, requisicoes, carteiras, ordens, contas, corretoras, aplicacao, versao_aplicacao, projeto, dashboard

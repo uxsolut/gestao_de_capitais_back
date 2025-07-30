@@ -3,9 +3,10 @@ from jose import JWTError, jwt, ExpiredSignatureError
 from passlib.context import CryptContext
 from fastapi import HTTPException, status
 from typing import Optional
+import os
 
 # Chave secreta e algoritmo
-SECRET_KEY = "4RAtt9Xu7CcRnHFCwdd4oFzrUmL8D8eFnLgf8vzxFr9PWTVrYjvVYBEn8mLCebRb"
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 horas
 

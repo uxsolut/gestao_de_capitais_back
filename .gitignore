@@ -1,0 +1,19 @@
+# Ignorar arquivos sensíveis e temporários
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+instance/
+*.db
+*.log
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
