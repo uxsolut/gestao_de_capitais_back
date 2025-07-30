@@ -7,7 +7,7 @@ from config import settings
 from middleware.error_handler import ErrorHandlerMiddleware
 
 from models import corretoras  
-from routers import robos, users, robos_do_user, requisicoes, carteiras, ordens, contas, corretoras, aplicacao, versao_aplicacao, projeto
+from routers import robos, users, robos_do_user, requisicoes, carteiras, ordens, contas, corretoras, aplicacao, versao_aplicacao, projeto, dashboard
 
 # Criação das tabelas no banco
 Base.metadata.create_all(bind=engine)
@@ -47,6 +47,7 @@ app.include_router(corretoras.router)
 app.include_router(aplicacao.router)
 app.include_router(versao_aplicacao.router)
 app.include_router(projeto.router)
+app.include_router(dashboard.router)
 
 # OpenAPI customizado
 def custom_openapi():
