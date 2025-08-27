@@ -10,5 +10,6 @@ class Corretora(Base):
     cnpj = Column(String, nullable=True)
     telefone = Column(String, nullable=True)
     email = Column(String, nullable=True)
+    pais = Column(String, nullable=False, default="Brasil")  # 👈 novo campo
 
     contas = relationship("Conta", back_populates="corretora")

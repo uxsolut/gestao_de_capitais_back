@@ -1,64 +1,56 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Numeric, DateTime, Boolean
+# models/contas.py
+from sqlalchemy import Column, Integer, String, ForeignKey, Numeric, Text, DateTime, Index
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from database import Base
-from datetime import datetime
 
 class Conta(Base):
     __tablename__ = "contas"
 
     id = Column(Integer, primary_key=True, index=True)
-    nome = Column(String, nullable=False)  # ✅ Nome obrigatório
-    conta_meta_trader = Column(String, nullable=True, unique=True)  # ✅ Unique constraint
-    
-    # ✅ Relacionamentos com constraints adequados
+    # no print do \d não há unique em conta_meta_trader, então não marcamos unique=True
+    conta_meta_trader = Column(String, nullable=True)
+
     id_corretora = Column(Integer, ForeignKey("corretoras.id", ondelete="SET NULL"), nullable=True)
-    id_carteira = Column(Integer, ForeignKey("carteiras.id", ondelete="SET NULL"), nullable=True)
+    id_carteira  = Column(Integer, ForeignKey("carteiras.id", ondelete="SET NULL"),  nullable=True)
 
-    # ✅ Campos financeiros com precisão adequada
-    margem_total = Column(Numeric(15, 2), nullable=True, default=0.00)
-    margem_disponivel = Column(Numeric(15, 2), nullable=True, default=0.00)
-    margem_utilizada = Column(Numeric(15, 2), nullable=True, default=0.00)  # ✅ Campo adicional
-    
-    # ✅ Campos de controle
-    ativa = Column(Boolean, default=True, nullable=False)
-    status = Column(String(20), default="ativa", nullable=False)  # ativa, inativa, bloqueada, suspensa
-    
-    # ✅ Campos de auditoria
-    criado_em = Column(DateTime, default=datetime.utcnow, nullable=False)
-    atualizado_em = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    criado_por = Column(Integer, ForeignKey("users.id"), nullable=True)
-    atualizado_por = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # no schema não está NOT NULL -> deixamos nullable=True
+    nome = Column(Text, nullable=True)
 
-    # ✅ Relacionamentos melhorados
-    corretora = relationship("Corretora", back_populates="contas")
-    carteira = relationship("Carteira", back_populates="contas")
-    
-    # ✅ Relacionamentos de auditoria
-    criador = relationship("User", foreign_keys=[criado_por])
-    atualizador = relationship("User", foreign_keys=[atualizado_por])
+    margem_total      = Column(Numeric, nullable=True)
+    margem_disponivel = Column(Numeric, nullable=True)
+
+    jwt_atual  = Column(Text, nullable=True)
+
+    # default vem do banco: CURRENT_TIMESTAMP
+    updated_at = Column(DateTime(timezone=False),
+                        server_default=func.current_timestamp(),
+                        onupdate=func.current_timestamp(),
+                        nullable=True)
+
+    # NOVO: token agora pertence à conta
+    chave_do_token = Column(Text, nullable=True)
+
+    # Relacionamentos
+    corretora     = relationship("Corretora", back_populates="contas")
+    carteira      = relationship("Carteira",  back_populates="contas")
+    robos_do_user = relationship("RoboDoUser", back_populates="conta")
+
+    logs = relationship(
+        "Log",
+        back_populates="conta",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        passive_deletes=True,
+    )
 
     def __repr__(self):
-        return f"<Conta(id={self.id}, nome='{self.nome}', status='{self.status}')>"
+        return f"<Conta id={self.id} nome={self.nome!r} conta_meta_trader={self.conta_meta_trader!r}>"
 
-    @property
-    def margem_livre(self):
-        """Calcula a margem livre (disponível - utilizada)"""
-        if self.margem_disponivel and self.margem_utilizada:
-            return self.margem_disponivel - self.margem_utilizada
-        return self.margem_disponivel or 0
-
-    @property
-    def percentual_utilizacao(self):
-        """Calcula o percentual de utilização da margem"""
-        if self.margem_total and self.margem_total > 0 and self.margem_utilizada:
-            return (self.margem_utilizada / self.margem_total) * 100
-        return 0
-
-    def pode_operar(self, valor_necessario):
-        """Verifica se a conta pode operar com o valor especificado"""
-        return (self.ativa and 
-                self.status == "ativa" and 
-                self.margem_livre >= valor_necessario)
-    
-    robos_do_user = relationship("RobosDoUser", back_populates="conta")
-
+# Índice único parcial (opcional declarar aqui; já existe via SQL)
+Index(
+    "contas_chave_do_token_uidx",
+    Conta.chave_do_token,
+    unique=True,
+    postgresql_where=Conta.chave_do_token.isnot(None),
+)

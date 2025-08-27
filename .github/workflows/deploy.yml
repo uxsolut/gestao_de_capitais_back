@@ -1,0 +1,30 @@
+name: Deploy to Hetzner
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: {}   # permite rodar manualmente em Actions
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-gestao
+      cancel-in-progress: true
+
+    steps:
+      - name: Configure SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.HETZNER_SSH_KEY }}
+
+      - name: Trust host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.HETZNER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Remote deploy
+        run: |
+          ssh -o StrictHostKeyChecking=yes \
+             ${{ secrets.HETZNER_USER }}@${{ secrets.HETZNER_HOST }} \
+             'bash /opt/gestao_de_capitais/deploy.sh'

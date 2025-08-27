@@ -2,7 +2,7 @@ from fastapi import APIRouter, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from models.robos_do_user import RobosDoUser
+from models.robos_do_user import RoboDoUser
 from schemas.robos_do_user import RoboDoUser
 from models.robos import Robo
 from models.users import User
@@ -18,13 +18,13 @@ def listar_robos_do_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(RobosDoUser).filter(RobosDoUser.id_user == current_user.id)
+    query = db.query(RoboDoUser).filter(RoboDoUser.id_user == current_user.id)
 
     if id_robo_user is not None:
-        query = query.filter(RobosDoUser.id == id_robo_user)
+        query = query.filter(RoboDoUser.id == id_robo_user)
     
     if id_conta is not None:
-        query = query.filter(RobosDoUser.id_conta == id_conta)
+        query = query.filter(RoboDoUser.id_conta == id_conta)
 
     return query.all()
 
@@ -43,7 +43,7 @@ def criar_robo_do_user(
 ):
     # Verifica duplicidade
     if id_robo is not None and id_conta is not None:
-        existente = db.query(RobosDoUser).filter_by(
+        existente = db.query(RoboDoUser).filter_by(
             id_robo=id_robo, id_conta=id_conta, id_user=current_user.id
         ).first()
         if existente:
@@ -59,7 +59,7 @@ def criar_robo_do_user(
 
     conteudo = robo.arquivo_user
 
-    novo = RobosDoUser(
+    novo = RoboDoUser(
         id_user=current_user.id,
         id_robo=id_robo,
         ligado=ligado,

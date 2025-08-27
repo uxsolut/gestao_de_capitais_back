@@ -17,8 +17,11 @@ class User(Base):
 
     # ✅ Relacionamentos melhorados
     ordens = relationship("Ordem", foreign_keys="[Ordem.id_user]", back_populates="user")
-    robos_do_user = relationship("RobosDoUser", foreign_keys="[RobosDoUser.id_user]", back_populates="user")
+    robos_do_user = relationship("RoboDoUser", foreign_keys="[RoboDoUser.id_user]", back_populates="user")
     carteiras = relationship("Carteira", back_populates="user", cascade="all, delete-orphan")
+    logs = relationship("Log", back_populates="usuario", cascade="all, delete-orphan")
+    relatorios = relationship("Relatorio", back_populates="user")
+    versoes_aplicacao = relationship("VersaoAplicacao", back_populates="user")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', tipo='{self.tipo_de_user}')>"

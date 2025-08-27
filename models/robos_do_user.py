@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from database import Base
 
-class RobosDoUser(Base):
+class RoboDoUser(Base):
     __tablename__ = "robos_do_user"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -24,6 +24,7 @@ class RobosDoUser(Base):
     carteira = relationship("Carteira", back_populates="robos_do_user")
     conta = relationship("Conta", back_populates="robos_do_user")
     aplicacao = relationship("Aplicacao", back_populates="robos_do_user")
+    logs = relationship("Log", back_populates="robo_user", cascade="all, delete-orphan")
 
     ordem = relationship("Ordem", foreign_keys=[id_ordem])
     ordens = relationship("Ordem", back_populates="robo_user", foreign_keys="[Ordem.id_robo_user]")

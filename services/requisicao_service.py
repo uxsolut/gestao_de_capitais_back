@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from models.requisicoes import Requisicao
-from models.robos_do_user import RobosDoUser
+from models.robos_do_user import RoboDoUser
 from models.contas import Conta
 from services.cache_service import cache_service
 from config import settings
@@ -31,12 +31,12 @@ class RequisicaoService:
                 raise ValueError("id_robo é obrigatório")
             
             # 2. Buscar robôs operacionais
-            robos_operacionais = self.db.query(RobosDoUser).filter(
+            robos_operacionais = self.db.query(RoboDoUser).filter(
                 and_(
-                    RobosDoUser.id_robo == requisicao_data['id_robo'],
-                    RobosDoUser.ligado == True,
-                    RobosDoUser.ativo == True,
-                    RobosDoUser.status == "ativo"
+                    RoboDoUser.id_robo == requisicao_data['id_robo'],
+                    RoboDoUser.ligado == True,
+                    RoboDoUser.ativo == True,
+                    RoboDoUser.status == "ativo"
                 )
             ).all()
             

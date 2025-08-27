@@ -1,17 +1,29 @@
-from sqlalchemy import Column, Integer, Text, LargeBinary, DateTime, ForeignKey, func
+from sqlalchemy import Column, Integer, Text, DateTime, ForeignKey, LargeBinary
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from database import Base
-from sqlalchemy.orm import relationship  # se quiser usar relacionamento
 
 class VersaoAplicacao(Base):
     __tablename__ = "versao_aplicacao"
 
     id = Column(Integer, primary_key=True, index=True)
     descricao = Column(Text, nullable=False)
-    arquivo = Column(LargeBinary)
-    data_versao = Column(DateTime, server_default=func.current_timestamp())
-    id_user = Column(Integer, ForeignKey("users.id"), nullable=False)
-    id_aplicacao = Column(Integer, ForeignKey("aplicacao.id"), nullable=True)  # novo campo
-    criado_em = Column(DateTime, server_default=func.current_timestamp())
+    arquivo = Column(LargeBinary, nullable=True)
+    data_versao = Column(DateTime, default=func.now())
 
-    # Relacionamento (opcional)
-    aplicacao = relationship("Aplicacao", backref="versoes", foreign_keys=[id_aplicacao])
+    id_user = Column(Integer, ForeignKey("users.id"))
+    id_aplicacao = Column(Integer, ForeignKey("aplicacao.id"))
+
+    criado_em = Column(DateTime, default=func.now())
+
+    # Relacionamentos
+    user = relationship("User", back_populates="versoes_aplicacao")
+
+    aplicacao = relationship(
+        "Aplicacao",
+        back_populates="versoes",
+        foreign_keys=[id_aplicacao]  # 👈 necessário
+    )
+
+    def __repr__(self):
+        return f"<VersaoAplicacao(id={self.id}, descricao='{self.descricao}')>"

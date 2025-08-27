@@ -1,84 +1,219 @@
+# main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from database import engine, Base
 from prometheus_fastapi_instrumentator import Instrumentator
-from config import settings
-from middleware.error_handler import ErrorHandlerMiddleware
+
 from dotenv import load_dotenv
 load_dotenv()
 
-from models import corretoras  
-from routers import robos, users, robos_do_user, requisicoes, carteiras, ordens, contas, corretoras, aplicacao, versao_aplicacao, projeto, dashboard
+import os
+import structlog
 
-# Criação das tabelas no banco
+from config import settings
+from database import engine, Base
+from middleware.error_handler import ErrorHandlerMiddleware
+
+# --- Carrega models para garantir os mapeamentos/tabelas ---
+from models import corretoras  # noqa: F401
+from models import robos as m_robos  # noqa: F401
+from models import requisicoes as m_requisicao  # noqa: F401
+from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401  <-- novo
+from models import ordens as m_ordens  # noqa: F401               <-- novo
+
+# --- Routers "públicos" de app (EXCETO processamento/consumo) ---
+from routers import (
+    cliente_carteiras,
+    robos,
+    users,
+    robos_do_user,
+    ordens,
+    corretoras as r_corretoras,
+    aplicacao,
+    versao_aplicacao,
+    projeto,
+    dashboard,
+    cliente_contas,
+    health,
+)
+# NÃO importe processamento / consumo_processamento aqui em cima
+# (eles serão importados localmente dentro dos blocos de modo)
+
+# --- Watchdog (apenas para o modo write) ---
+from background.token_watchdog import start_token_watchdog, stop_token_watchdog
+
+
+# ---------- Logging estruturado ----------
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.processors.JSONRenderer(),
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+logger = structlog.get_logger()
+
+
+# ---------- Criação das tabelas ----------
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(
-    title="Meta Trade API",
-    version="2.0.0",
-    description="API de Gestão de Capitais com melhorias de segurança",
-    debug=settings.DEBUG
-)
 
-# Middleware de tratamento de erros
-app.add_middleware(ErrorHandlerMiddleware)
+def create_app(mode: str = "all") -> FastAPI:
+    """
+    Modo de execução:
+      - "public": sobe todos os routers de app, EXCETO 'processamento' e 'consumo_processamento' (+ health).
+                  Documentação (Swagger/OpenAPI) ATIVADA.
+      - "write" : sobe somente o POST /api/v1/processar-requisicao (+ health). Watchdog ATIVADO. Docs DESLIGADAS.
+      - "read"  : sobe somente o consumo de processamento (+ health). Docs DESLIGADAS.
+      - "all"   : sobe tudo (comportamento legado). Docs ATIVADAS.
+    """
 
-# CORS com configuração segura
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
-)
+    # Exposição de docs por modo
+    docs_enabled = mode in ("public", "all", "write", "read")
+    docs_url = "/docs" if docs_enabled else None
+    openapi_url = "/openapi.json" if docs_enabled else None
 
-# Rotas
-@app.get("/")
-def read_root():
-    return {"mensagem": "API online com sucesso!"}
-
-app.include_router(ordens.router)
-app.include_router(robos.router)
-app.include_router(users.router)          
-app.include_router(robos_do_user.router)  
-app.include_router(requisicoes.router)
-app.include_router(carteiras.router)
-app.include_router(contas.router)
-app.include_router(corretoras.router)
-app.include_router(aplicacao.router)
-app.include_router(versao_aplicacao.router)
-app.include_router(projeto.router)
-app.include_router(dashboard.router)
-
-# OpenAPI customizado
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    openapi_schema = get_openapi(
+    app = FastAPI(
         title="Meta Trade API",
-        version="1.0.0",
-        description="Documentação da API da Meta Trade com autenticação JWT",
-        routes=app.routes,
+        version="2.0.0",
+        description="API de Gestão de Capitais com segurança via Bearer token (opaque).",
+        debug=settings.DEBUG,
+        docs_url=docs_url,
+        openapi_url=openapi_url,
     )
-    openapi_schema["components"]["securitySchemes"] = {
-        "BearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-        }
-    }
-    openapi_schema["security"] = [{"BearerAuth": []}]
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
 
-app.openapi = custom_openapi
+    # Middlewares
+    app.add_middleware(ErrorHandlerMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
 
-# ✅ Expor métricas no /metrics (ANTES de rodar)
-Instrumentator().instrument(app).expose(app)
+    # Raiz simples
+    @app.get("/")
+    def read_root():
+        return {"mensagem": "API online com sucesso!", "mode": mode}
 
-# Execução local
-import os
+    # Sempre expõe health
+    app.include_router(health.router, prefix="/api/v1", tags=["Health"])
+
+    # ---- Registro de rotas por modo ----
+    if mode == "write":
+        # Apenas o POST de processamento (import local!)
+        from routers import processamento
+        app.include_router(processamento.router, tags=["Processamento"], prefix="/api/v1")
+
+    elif mode == "read":
+        # Apenas o consumo de processamento (import local!)
+        from routers import consumo_processamento
+        app.include_router(consumo_processamento.router, tags=["Consumo Processamento"])
+
+    elif mode == "public":
+        # Todos os routers de app, EXCETO processamento e consumo
+        app.include_router(ordens.router)
+        app.include_router(robos.router)
+        app.include_router(users.router)
+        app.include_router(robos_do_user.router)
+        app.include_router(cliente_carteiras.router)
+        app.include_router(r_corretoras.router)
+        app.include_router(aplicacao.router)
+        app.include_router(versao_aplicacao.router)
+        app.include_router(projeto.router)
+        app.include_router(dashboard.router)
+        app.include_router(cliente_contas.router)
+
+    elif mode == "all":
+        # Tudo (legado)
+        app.include_router(ordens.router)
+        app.include_router(robos.router)
+        app.include_router(users.router)
+        app.include_router(robos_do_user.router)
+        app.include_router(cliente_carteiras.router)
+        app.include_router(r_corretoras.router)
+        app.include_router(aplicacao.router)
+        app.include_router(versao_aplicacao.router)
+        app.include_router(projeto.router)
+        app.include_router(dashboard.router)
+        app.include_router(cliente_contas.router)
+
+        from routers import processamento, consumo_processamento  # import local
+        app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
+        app.include_router(consumo_processamento.router, tags=["Consumo Processamento"])
+
+    # ---------- OpenAPI custom (só faz sentido se docs estiverem ligadas) ----------
+    if docs_enabled:
+        def custom_openapi():
+            if app.openapi_schema:
+                return app.openapi_schema
+            openapi_schema = get_openapi(
+                title="Meta Trade API",
+                version="2.0.0",
+                description="Documentação da API com autenticação Bearer (token opaco ou JWT, conforme endpoint).",
+                routes=app.routes,
+            )
+            openapi_schema.setdefault("components", {}).setdefault("securitySchemes", {})
+            openapi_schema["components"]["securitySchemes"]["BearerAuth"] = {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "Opaque",
+            }
+            openapi_schema["security"] = [{"BearerAuth": []}]
+            app.openapi_schema = openapi_schema
+            return app.openapi_schema
+
+        app.openapi = custom_openapi
+
+    # ---------- Métricas ----------
+    Instrumentator().instrument(app).expose(app)
+
+    # ---------- Eventos ----------
+    @app.on_event("startup")
+    async def startup_event():
+        logger.info(
+            "Iniciando API",
+            version=settings.app_version,
+            mode=mode,
+            watchdog_enabled=getattr(settings, "TOKEN_WATCHDOG_ENABLED", True),
+        )
+        # inicia watchdog apenas no modo write
+        if mode == "write" and str(getattr(settings, "TOKEN_WATCHDOG_ENABLED", True)).lower() not in ("0", "false", "no"):
+            start_token_watchdog(app)
+
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        logger.info("Encerrando API", mode=mode)
+        if mode == "write" and str(getattr(settings, "TOKEN_WATCHDOG_ENABLED", True)).lower() not in ("0", "false", "no"):
+            try:
+                stop_token_watchdog(app)
+            except Exception:
+                pass
+        try:
+            from database import db_manager
+            db_manager.close_connections()
+            logger.info("Conexoes de banco fechadas com sucesso")
+        except Exception as e:
+            logger.error("Erro ao fechar conexoes de banco", error=str(e))
+
+    return app
+
+
+# ---------- Bootstrap ----------
+MODE = os.getenv("APP_MODE", "all")  # "public" | "write" | "read" | "all"
+app = create_app(MODE)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))

@@ -11,8 +11,16 @@ class Carteira(Base):
 
     # Relacionamentos
     user = relationship("User", back_populates="carteiras")
-    contas = relationship("Conta", back_populates="carteira", cascade="all, delete-orphan")
-    robos_do_user = relationship("RobosDoUser", back_populates="carteira")
+    contas = relationship(
+        "Conta",
+        back_populates="carteira",
+        cascade="all, delete-orphan"
+    )
+    robos_do_user = relationship(
+        "RoboDoUser",
+        back_populates="carteira",
+        cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
         return f"<Carteira(id={self.id}, nome='{self.nome}')>"
