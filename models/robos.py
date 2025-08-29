@@ -1,20 +1,32 @@
+# models/robo.py
+from datetime import datetime
 from sqlalchemy import Column, Integer, Text, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import ARRAY
-from datetime import datetime
+
 from database import Base
+
 
 class Robo(Base):
     __tablename__ = "robos"
 
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(Text, nullable=False)
-    criado_em = Column(DateTime, nullable=False, default=datetime.utcnow)
-    performance = Column(ARRAY(Text), nullable=True)
-    id_ativo = Column(Integer, ForeignKey("ativos.id"))
 
+    # Banco: timestamp without time zone NOT NULL
+    # Mantemos default em Python para garantir valor ao inserir via ORM
+    criado_em = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # text[]
+    performance = Column(ARRAY(Text), nullable=True)
+
+    # FK opcional para ativos(id)
+    id_ativo = Column(Integer, ForeignKey("ativos.id"), nullable=True)
+
+    # -----------------
+    # RELACIONAMENTOS
+    # -----------------
     ativo = relationship("Ativo", foreign_keys=[id_ativo])
-    relatorios = relationship("Relatorio", back_populates="robo")
 
     logs = relationship("Log", back_populates="robo", cascade="all, delete-orphan")
     relatorios = relationship("Relatorio", back_populates="robo", cascade="all, delete-orphan")
