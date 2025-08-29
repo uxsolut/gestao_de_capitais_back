@@ -1,50 +1,41 @@
-from datetime import datetime, timedelta
-from jose import JWTError, jwt, ExpiredSignatureError
+# auth/auth.py
+from datetime import datetime, timedelta, timezone
+from jose import jwt, JWTError, ExpiredSignatureError
 from passlib.context import CryptContext
 from fastapi import HTTPException, status
-from typing import Optional
 import os
 
-# Chave secreta e algoritmo
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 horas
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY não definida (verifique /etc/app.env e o systemd).")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def verificar_senha(senha_pura: str, senha_hash: str):
+def verificar_senha(senha_pura: str, senha_hash: str) -> bool:
     return pwd_context.verify(senha_pura, senha_hash)
 
-def gerar_hash_senha(senha: str):
+def gerar_hash_senha(senha: str) -> str:
     return pwd_context.hash(senha)
 
-def criar_token_acesso(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+def criar_token_acesso(sub: str, minutes: int | None = None) -> str:
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(minutes=minutes or ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {"sub": str(sub), "iat": int(now.timestamp()), "exp": int(exp.timestamp())}
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-def verificar_token(token: str):
+def verificar_token(token: str) -> int:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token sem ID de usuário",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return int(user_id)
+        sub = payload.get("sub")
+        if not sub:
+            raise HTTPException(status_code=401, detail="Token sem ID de usuário",
+                                headers={"WWW-Authenticate": "Bearer"})
+        return int(sub)
     except ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token expirado",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(status_code=401, detail="Token expirado",
+                            headers={"WWW-Authenticate": "Bearer"})
     except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token inválido",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(status_code=401, detail="Token inválido",
+                            headers={"WWW-Authenticate": "Bearer"})
