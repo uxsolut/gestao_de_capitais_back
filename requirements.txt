@@ -13,4 +13,6 @@ redis
 pytest
 pytest-asyncio
 httpx
-
+structlog
+python-dotenv
+pydantic-settings
