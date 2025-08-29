@@ -9,7 +9,6 @@ from database import get_db
 from models.users import User
 from schemas.users import User as UserSchema, UserCreate, UserLogin
 from auth.dependencies import get_current_user
-from fastapi.security import OAuth2PasswordRequestForm
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -86,15 +85,3 @@ def listar_users(
     current_user: User = Depends(get_current_user),
 ):
     return db.query(User).all()
-
-# ---------- NEM SEI ----------
-@router.post("/token", tags=["Users"])
-def oauth_token(
-    form: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db),
-):
-    user = db.query(User).filter(User.email == form.username).first()
-    if not user or not verify_password(form.password, user.senha):
-        raise HTTPException(status_code=401, detail="E-mail ou senha incorretos.")
-    access_token = create_access_token({"sub": str(user.id)})
-    return {"access_token": access_token, "token_type": "bearer"}
