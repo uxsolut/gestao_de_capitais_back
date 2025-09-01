@@ -431,21 +431,23 @@ class ProcessamentoRepository:
     # ---------------- Helpers do WATCHDOG ----------------
     def listar_contas_inicializadas(self, limit: int = 500) -> List[Dict[str, Any]]:
         """
-        Contas que possuem PELO MENOS uma ordem 'Inicializado'.
-        Usado pelo watchdog para garantir/rotacionar token.
-        Retorna: [{"id": <id_conta>, "chave_do_token": <str|null>}]
+        Contas com AO MENOS uma ordem 'Inicializado'.
+        Cobre dados novos (id_conta) e legados (conta_meta_trader com id_conta NULL).
         """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
-                """
-                SELECT c.id AS id, c.chave_do_token
-                  FROM public.contas c
-                 WHERE EXISTS (
-                        SELECT 1
-                          FROM public.ordens o
-                         WHERE o.id_conta = c.id
-                               AND o.status = 'Inicializado'::ordem_status
+                    """
+                    SELECT c.id AS id, c.chave_do_token
+                      FROM public.contas c
+                     WHERE EXISTS (
+                            SELECT 1
+                              FROM public.ordens o
+                             WHERE o.status = 'Inicializado'::ordem_status
+                               AND (
+                                     o.id_conta = c.id
+                                  OR (o.id_conta IS NULL AND o.conta_meta_trader = c.conta_meta_trader)
+                               )
                            )
                   ORDER BY c.id DESC
                      LIMIT %s
@@ -460,9 +462,8 @@ class ProcessamentoRepository:
 
     def listar_contas_consumidas_com_token(self, limit: int = 200) -> List[Dict[str, Any]]:
         """
-        Contas que têm chave_do_token, mas NÃO possuem NENHUMA ordem 'Inicializado'.
-        Aqui podemos apagar a chave no Redis e zerar no banco.
-        Retorna: [{"id": <id_conta>, "chave_do_token": <str>}]
+        Contas com token, mas SEM NENHUMA ordem 'Inicializado'.
+        Considera tanto id_conta quanto legado por conta_meta_trader.
         """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
@@ -474,8 +475,11 @@ class ProcessamentoRepository:
                        AND NOT EXISTS (
                             SELECT 1
                               FROM public.ordens o
-                             WHERE o.id_conta = c.id
-                               AND o.status = 'Inicializado'::ordem_status
+                             WHERE o.status = 'Inicializado'::ordem_status
+                               AND (
+                                     o.id_conta = c.id
+                                  OR (o.id_conta IS NULL AND o.conta_meta_trader = c.conta_meta_trader)
+                               )
                            )
                   ORDER BY c.id DESC
                      LIMIT %s
@@ -486,6 +490,7 @@ class ProcessamentoRepository:
         except Exception as e:
             logger.error("listar_contas_consumidas_com_token_erro", error=str(e))
             return []
+
     
     def limpar_chave_token_por_id(self, conta_id: int):
         """Zera a coluna chave_do_token da TABELA CONTAS."""
