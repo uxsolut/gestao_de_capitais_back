@@ -1,9 +1,12 @@
 # background/token_watchdog.py
+# -*- coding: utf-8 -*-
+
 import asyncio
 import json
 import secrets
-import structlog
 from typing import Optional, Dict, Any
+
+import structlog
 
 from config import settings
 from database import ProcessamentoRepository
@@ -14,15 +17,18 @@ logger = structlog.get_logger()
 # -------------------------
 # Config (com defaults)
 # -------------------------
-TTL_SECONDS = int(getattr(settings, "TOKEN_TTL_SECONDS", 300))
-REFRESH_THRESHOLD_SEC = int(getattr(settings, "TOKEN_WATCHDOG_REFRESH_THRESHOLD_SECONDS", 90))
-GRACE_MS = int(getattr(settings, "TOKEN_WATCHDOG_GRACE_MS", 2000))
-INTERVAL_SEC = float(getattr(settings, "TOKEN_WATCHDOG_INTERVAL_SECONDS", 10))
+TTL_SECONDS = int(getattr(settings, "TOKEN_TTL_SECONDS", 300))  # TTL do token no Redis
+REFRESH_THRESHOLD_SEC = int(getattr(settings, "TOKEN_WATCHDOG_REFRESH_THRESHOLD_SECONDS", 90))  # quando rotacionar
+GRACE_MS = int(getattr(settings, "TOKEN_WATCHDOG_GRACE_MS", 2000))  # quanto tempo a chave antiga ainda vive
+INTERVAL_SEC = float(getattr(settings, "TOKEN_WATCHDOG_INTERVAL_SECONDS", 10))  # intervalo entre ticks
 NAMESPACE = (getattr(settings, "OPAQUE_TOKEN_NAMESPACE", "tok") or "tok").strip()
 
 
 def _key_from_db(db_val: Optional[str]) -> Optional[str]:
-    """Garante que a chave tenha o namespace (ex.: 'tok:...')."""
+    """
+    Garante que a chave tenha o namespace (ex.: "tok:abc").
+    Aceita colunas que já vêm com namespace ou só o raw-token.
+    """
     if not db_val:
         return None
     s = db_val.strip()
@@ -30,33 +36,27 @@ def _key_from_db(db_val: Optional[str]) -> Optional[str]:
 
 
 def _raw_from_key(key: str) -> str:
+    """Extrai a parte 'raw' do token dado 'tok:raw'."""
     pref = f"{NAMESPACE}:"
     return key[len(pref):] if key.startswith(pref) else key
 
 
-def _requisicao_id_from(numero_unico: Optional[str]) -> Optional[int]:
-    """Extrai requisicao_id de 'REQ-<id>-<conta>' quando houver (legado)."""
-    if numero_unico and numero_unico.startswith("REQ-"):
-        try:
-            _, sreq, _ = numero_unico.split("-", 2)
-            return int(sreq)
-        except Exception:
-            return None
-    return None
-
-
-def _ensure_payload_v2(payload_str: Optional[str],
-                       numero_unico: Optional[str],
-                       conta: Optional[str]) -> Dict[str, Any]:
+def _ensure_payload_v2(payload_str: Optional[str], conta_id: Optional[int]) -> Dict[str, Any]:
     """
-    Retorna payload v2 no formato:
-      {"conta": "...", "requisicao_id": int|None, "scope": "consulta_reqs", "ordens": [ ... ]}
-    Converte legado quando necessário.
+    Garante um payload no formato v2 (somente por CONTA):
+      {
+        "conta": "<id_conta em string>",
+        "requisicao_id": <int|None>,
+        "scope": "consulta_reqs",
+        "ordens": [ {...}, ... ]
+      }
+    Se o payload existente já estiver em v2, apenas normaliza "conta".
+    Se não houver payload, cria um esqueleto vazio.
     """
-    def _skeleton():
+    def _skeleton() -> Dict[str, Any]:
         return {
-            "conta": (str(conta) if conta is not None else None),
-            "requisicao_id": _requisicao_id_from(numero_unico),
+            "conta": str(conta_id) if conta_id is not None else None,
+            "requisicao_id": None,   # desconhecido aqui; será atualizado pelo processamento
             "scope": "consulta_reqs",
             "ordens": [],
         }
@@ -70,66 +70,52 @@ def _ensure_payload_v2(payload_str: Optional[str],
         return _skeleton()
 
     if isinstance(p, dict) and "ordens" in p:
-        p.setdefault("conta", str(conta) if conta is not None else p.get("conta"))
+        p["conta"] = str(conta_id) if conta_id is not None else p.get("conta")
         p.setdefault("scope", "consulta_reqs")
-        p.setdefault("requisicao_id", p.get("requisicao_id", _requisicao_id_from(numero_unico)))
+        p.setdefault("requisicao_id", p.get("requisicao_id"))
         return p
 
-    # legado {"conta","requisicao_id","scope","ordem_id","dados":{...}}
-    ordem = {}
-    if isinstance(p, dict):
-        if "ordem_id" in p:
-            ordem["ordem_id"] = p.get("ordem_id")
-        dados = p.get("dados") or {}
-        for k in ("id_robo", "id_tipo_ordem", "tipo", "symbol"):
-            if k in dados:
-                ordem[k] = dados[k]
-        novo = _skeleton()
-        if ordem:
-            novo["ordens"].append(ordem)
-        return novo
-
+    # qualquer outro formato -> esqueleto
     return _skeleton()
 
 
-def _tick_once():
+def _tick_once() -> None:
     """
     Uma passada do watchdog:
-      1) Zera token de contas SEM ordens 'Inicializado'.
-      2) Para contas COM 'Inicializado', garante chave no Redis e renova se TTL baixo/sumiu.
+
+      1) Limpa token (DB + Redis) das CONTAS onde NÃO existe nenhuma ordem 'Inicializado'.
+      2) Para as CONTAS onde EXISTE ao menos uma 'Inicializado':
+         - Gera chave se não existir;
+         - Renova/rotaciona se TTL inexistente ou baixo (<= REFRESH_THRESHOLD_SEC).
     """
     repo = ProcessamentoRepository()
     RO = _redis_ordens()
 
-    # 1) Contas onde já é seguro limpar token (todas ordens consumidas)
+    # 1) Contas onde é seguro limpar (nenhuma ordem 'Inicializado')
     for row in repo.listar_contas_consumidas_com_token(limit=200):
-        key_in_db = _key_from_db(row.get("chave_do_token"))
         conta_id = row.get("id")
-
+        key_in_db = _key_from_db(row.get("chave_do_token"))
         if key_in_db:
             try:
                 RO.delete(key_in_db)
             except Exception as e:
                 logger.warning("watchdog_delete_old_key_fail", key=key_in_db, error=str(e))
-
         try:
             repo.limpar_chave_token_por_id(conta_id)
             logger.info("watchdog_token_cleared", conta_id=conta_id)
         except Exception as e:
             logger.warning("watchdog_db_clear_fail", conta_id=conta_id, error=str(e))
 
-    # 2) Contas que ainda têm ordens 'Inicializado' → precisam ter chave viva
+    # 2) Contas com ordens 'Inicializado' -> garantir/rotacionar chave
     for row in repo.listar_ordens_inicializadas(limit=500):
         conta_id = row.get("id")  # ID da conta
-        conta = row.get("conta_meta_trader")
-        numero_unico = row.get("numero_unico")  # pode ser None (conta-based)
         db_val = row.get("chave_do_token")
         key = _key_from_db(db_val)
 
         # Sem chave no banco → criar
         if not key:
-            payload_v2 = _ensure_payload_v2(None, numero_unico, conta)
-            raw = _generate_token()  # usa secrets.token_urlsafe(32) internamente
+            payload_v2 = _ensure_payload_v2(None, conta_id)
+            raw = _generate_token() if callable(_generate_token) else secrets.token_urlsafe(32)
             new_key = f"{NAMESPACE}:{raw}"
             try:
                 RO.set(new_key, json.dumps(payload_v2, ensure_ascii=False), ex=TTL_SECONDS)
@@ -141,7 +127,7 @@ def _tick_once():
 
         # Já tem chave: ver TTL e renovar quando necessário
         try:
-            ttl = RO.ttl(key)  # -2 = não existe, -1 = sem TTL, >=0 = segundos
+            ttl = RO.ttl(key)  # -2 = não existe, -1 = sem TTL, >=0 = segundos restantes
         except Exception as e:
             logger.warning("watchdog_ttl_error", conta_id=conta_id, key=key, error=str(e))
             ttl = -2
@@ -151,13 +137,14 @@ def _tick_once():
         if not precisa_renovar:
             continue
 
+        # Carrega payload atual (se houver); mantém ordens acumuladas
         try:
             payload_s = RO.get(key)
         except Exception as e:
             logger.warning("watchdog_get_payload_error", conta_id=conta_id, key=key, error=str(e))
             payload_s = None
 
-        payload_v2 = _ensure_payload_v2(payload_s, numero_unico, conta)
+        payload_v2 = _ensure_payload_v2(payload_s, conta_id)
 
         raw = secrets.token_urlsafe(32)
         new_key = f"{NAMESPACE}:{raw}"
@@ -166,7 +153,7 @@ def _tick_once():
             pipe = RO.pipeline()
             pipe.set(new_key, json.dumps(payload_v2, ensure_ascii=False), ex=TTL_SECONDS)
             if ttl != -2:
-                # dá um pequeno "grace" na chave antiga para consumidores que ainda não atualizaram
+                # pequeno "grace" para consumidores que ainda estiverem usando a antiga
                 pipe.pexpire(key, GRACE_MS)
             pipe.execute()
 
@@ -182,7 +169,7 @@ def _tick_once():
             logger.error("watchdog_rotate_error", conta_id=conta_id, key=key, error=str(e))
 
 
-async def _loop():
+async def _loop() -> None:
     logger.info("token_watchdog_start")
     # deixa o app subir por completo antes do primeiro tick
     await asyncio.sleep(0)
@@ -194,12 +181,16 @@ async def _loop():
         await asyncio.sleep(INTERVAL_SEC)
 
 
-def start_token_watchdog(app):
-    # Inicie apenas quando quiser (ex.: apenas no serviço 'write')
+def start_token_watchdog(app) -> None:
+    """
+    Inicia o watchdog em background. Chame isso apenas no serviço 'write'
+    (ou onde você realmente precise do watchdog rodando).
+    """
     app.state.token_watchdog_task = asyncio.create_task(_loop())
 
 
-def stop_token_watchdog(app):
+def stop_token_watchdog(app) -> None:
+    """Cancela a task do watchdog no shutdown."""
     task = getattr(app.state, "token_watchdog_task", None)
     if task and not task.done():
         task.cancel()
