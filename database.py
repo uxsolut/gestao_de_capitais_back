@@ -247,22 +247,39 @@ class ProcessamentoRepository:
         return (row.get("chave_do_token") or None) if row else None
 
     def atualizar_chave_token_conta_por_id(self, id_conta: int, chave: Optional[str]) -> bool:
+        """
+        Atualiza/persiste a chave_do_token na tabela public.contas (por ID).
+        Aceita 'tok:...' ou o token cru; sempre salva com namespace.
+        """
         try:
+            # normaliza: sempre com namespace
+            ns = (getattr(settings, "OPAQUE_TOKEN_NAMESPACE", "") or "tok").strip()
+            if chave:
+                chave_final = chave if ":" in chave else f"{ns}:{chave}"
+            else:
+                chave_final = None  # permite limpar, se quiser
+
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
                     """
                     UPDATE public.contas
                        SET chave_do_token = %s,
-                           updated_at = now()
+                           updated_at     = now()
                      WHERE id = %s
+                 RETURNING chave_do_token
                     """,
-                    (chave, id_conta),
+                    (chave_final, id_conta),
                 )
+                row = c.fetchone()
                 conn.commit()
-                return c.rowcount > 0
+
+            salvo = row["chave_do_token"] if row else None
+            logger.info("chave_token_salva", id_conta=id_conta, chave_salva=salvo)
+            return bool(salvo)  # True se ficou algo salvo
         except Exception as e:
             logger.error("atualizar_chave_token_conta_por_id_erro", id=id_conta, error=str(e))
             return False
+
 
     def atualizar_chave_token_conta_por_meta(self, conta_meta: str, chave: Optional[str]) -> bool:
         conta_meta = (conta_meta or "").strip()
