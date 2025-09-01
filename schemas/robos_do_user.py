@@ -1,25 +1,25 @@
-from pydantic import BaseModel
+# schemas/robos_do_user.py
 from typing import Optional
+from pydantic import BaseModel, Field, ConfigDict
 
-class RoboDoUserCreate(BaseModel):
-    id_robo: int
-    ligado: Optional[bool] = False
-    ativo: Optional[bool] = False
-    tem_requisicao: Optional[bool] = False
-    id_ordem: Optional[int] = None
-    id_carteira: Optional[int] = None
-    id_conta: Optional[int] = None
+class RoboDoUserBase(BaseModel):
+    id_robo: int = Field(..., description="FK para robos.id")
+    id_carteira: Optional[int] = Field(None, description="FK opcional para carteiras.id")
+    id_conta: Optional[int]   = Field(None, description="FK opcional para contas.id")
+    id_ordem: Optional[int]   = Field(None, description="FK opcional para ordens.id")
+    id_aplicacao: Optional[int] = Field(None, description="FK opcional para aplicacao.id")
 
-class RoboDoUser(BaseModel):
+    ligado: Optional[bool] = Field(False, description="Se o robô está ligado para essa conta")
+    ativo: Optional[bool] = Field(False, description="Flag de ativo do vínculo")
+    tem_requisicao: Optional[bool] = Field(False, description="Se há requisição pendente")
+
+class RoboDoUserCreate(RoboDoUserBase):
+    """Entrada para criação (id_user vem do JWT, não faz parte do body)."""
+    pass
+
+class RoboDoUserOut(RoboDoUserBase):
+    """Resposta completa alinhada à tabela."""
     id: int
     id_user: int
-    id_robo: int
-    ligado: Optional[bool] = False
-    ativo: Optional[bool] = False
-    tem_requisicao: Optional[bool] = False
-    id_ordem: Optional[int] = None
-    id_carteira: Optional[int] = None
-    id_conta: Optional[int] = None
 
-    class Config:
-        from_attributes = True 
+    model_config = ConfigDict(from_attributes=True)
