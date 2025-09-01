@@ -345,8 +345,10 @@ class ProcessamentoRepository:
                 resultado["contas_processadas"] += 1
                 resultado["detalhes"].append(
                     {
+                        "id_conta": conta["id_conta"],
                         "conta": conta_num,
                         "status": "sucesso",
+                        "id_ordem": ordem_id,
                         "ordem_id": ordem_id,
                         "id_tipo_ordem": dados_requisicao.get("id_tipo_ordem"),
                         "tipo": (dados_requisicao.get("tipo") or "").upper(),
@@ -508,3 +510,19 @@ class ProcessamentoRepository:
             c.execute("DELETE FROM public.ordens WHERE id = %s", (ordem_id,))
             conn.commit()
             return c.rowcount > 0
+        
+    def buscar_chave_token_ativa_por_id(self, id_conta: int) -> Optional[str]:
+        """
+        Retorna a chave_do_token salva em public.contas para a conta (por ID).
+        """
+        try:
+            with self.db.get_postgres_connection() as conn, conn.cursor() as c:
+                c.execute(
+                    "SELECT chave_do_token FROM public.contas WHERE id = %s LIMIT 1",
+                    (id_conta,),
+                )
+                row = c.fetchone()
+                return row["chave_do_token"] if row else None
+        except Exception as e:
+            logger.error("buscar_chave_token_ativa_por_id_erro", id_conta=id_conta, error=str(e))
+            return None
