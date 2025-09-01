@@ -548,3 +548,31 @@ class ProcessamentoRepository:
         except Exception as e:
             logger.error("buscar_chave_token_ativa_por_id_erro", id_conta=id_conta, error=str(e))
             return None
+        
+    def listar_contas_com_inicializado(self, limit: int = 500):
+        """
+        Contas que possuem AO MENOS uma ordem em 'Inicializado'.
+        Retorna: [{'id': <id_conta>, 'chave_do_token': <str|None>}]
+        """
+        try:
+            with self.db.get_postgres_connection() as conn, conn.cursor() as c:
+                c.execute(
+                    """
+                    SELECT c.id AS id,
+                           c.chave_do_token
+                      FROM public.contas c
+                     WHERE EXISTS (
+                            SELECT 1
+                              FROM public.ordens o
+                             WHERE o.id_conta = c.id
+                               AND o.status = 'Inicializado'::ordem_status
+                           )
+                  ORDER BY c.id DESC
+                     LIMIT %s
+                    """,
+                    (limit,),
+                )
+                return [dict(r) for r in c.fetchall()]
+        except Exception as e:
+            logger.error("listar_contas_com_inicializado_erro", error=str(e))
+            return []
