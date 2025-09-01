@@ -114,15 +114,6 @@ def criar_conta(
         raise HTTPException(status_code=403, detail="Carteira não encontrada ou não pertence a este usuário.")
 
     # Corretora é OPCIONAL: só valida se veio informada
-    corretora_id: Optional[int] = None
-    corretora_nome: Optional[str] = None
-    if conta.id_corretora is not None:
-        corretora = db.query(Corretora).filter_by(id=conta.id_corretora).first()
-        if not corretora:
-            raise HTTPException(status_code=404, detail="Corretora não encontrada")
-        corretora_id = corretora.id
-        corretora_nome = corretora.nome
-
     nova_conta = Conta(
         nome=conta.nome,
         conta_meta_trader=conta.conta_meta_trader,
@@ -135,14 +126,25 @@ def criar_conta(
     db.commit()
     db.refresh(nova_conta)
 
+    # Se não veio corretora, mantenha None nos campos de corretora
+    corretora_id = None
+    corretora_nome = None
+    if conta.id_corretora is not None:
+        c = db.query(Corretora).filter_by(id=conta.id_corretora).first()
+        if not c:
+            raise HTTPException(status_code=404, detail="Corretora não encontrada")
+        corretora_id = c.id
+        corretora_nome = c.nome
+
     return ContaResponse(
         id=nova_conta.id,
         nome=nova_conta.nome,
         conta_meta_trader=nova_conta.conta_meta_trader,
         margem_total=nova_conta.margem_total,
         margem_disponivel=nova_conta.margem_disponivel,
-        id_corretora=corretora_id,
-        nome_corretora=corretora_nome,
+        id_corretora=corretora_id,          # pode ser None
+        id_carteira=nova_conta.id_carteira, # <-- FALTAVA
+        nome_corretora=corretora_nome,      # pode ser None
     )
 
 
