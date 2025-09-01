@@ -8,9 +8,10 @@ class ContaResponse(BaseModel):
     conta_meta_trader: Optional[str]
     margem_total: Optional[float]
     margem_disponivel: Optional[float]
-    id_corretora: int
-    id_carteira: int
-    nome_corretora: str
+    # ↓ Ajustado para o POST aceitar sem corretora e não quebrar a resposta
+    id_corretora: Optional[int]
+    id_carteira: Optional[int]
+    nome_corretora: Optional[str]
 
     class Config:
         orm_mode = True
@@ -49,8 +50,9 @@ class RoboDoUserResponse(BaseModel):
 
 class ContaCreate(BaseModel):
     nome: str
-    conta_meta_trader: str
-    id_corretora: int
+    # ↓ Tornados opcionais para o POST /cliente/contas
+    conta_meta_trader: Optional[str] = None
+    id_corretora: Optional[int] = None
     id_carteira: int
 
 
