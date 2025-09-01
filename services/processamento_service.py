@@ -17,6 +17,16 @@ logger = structlog.get_logger()
 
 
 # ------------------------ Redis helpers ------------------------
+def _redis_global() -> redis.Redis:
+    return redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        password=settings.redis_password,
+        db=int(getattr(settings, "REDIS_DB_GLOBAL", 0)),
+        decode_responses=True,
+    )
+
+
 def _redis_ordens() -> redis.Redis:
     return redis.Redis(
         host=settings.redis_host,
@@ -52,22 +62,16 @@ def _ensure_payload_v2(payload_str: Optional[str]) -> Dict[str, Any]:
         p = json.loads(payload_str)
     except Exception:
         return {}
-    # já é v2
     if isinstance(p, dict) and "ordens" in p:
         return p
-    # fallback tosco: empacota no formato novo
     return {"ordens": []}
-
-
-# def _mask(tok: str) -> str:
-#     return tok[:4] + "..." + tok[-4:] if tok and len(tok) >= 8 else (tok or "")
 
 
 class ProcessamentoService:
     """
     Serviço de negócio para processamento de requisições.
 
-    Política (somente por CONTA):
+    Política (somente por CONTA/id_conta):
       - Seleciona contas que tenham o robô ligado (robos_do_user.ligado = true) e id_conta definido.
       - Um token opaco por CONTA (chave Redis por conta).
       - Se já houver payload para a conta, SUBSTITUI a ordem do mesmo id_robo; senão, insere.
@@ -103,7 +107,7 @@ class ProcessamentoService:
             )
 
             # 2) busca SOMENTE contas com robô ligado e id_conta definido
-            # formato esperado de cada item: {"id_conta": int, "nome": str, "id_user": int, "id_robo_user": int}
+            # cada item deve ter: {"id_conta": int, "nome": str, "id_user": int, "id_robo_user": int}
             contas: List[Dict[str, Any]] = self.repository.buscar_contas_robos_ligados(id_robo)
             contas = [c for c in contas if c.get("id_conta") is not None]
             if not contas:
@@ -122,18 +126,25 @@ class ProcessamentoService:
                     tempo_processamento=tempo,
                 )
 
-            # 3) delega criação de ordens por conta (repo retorna ordem_id por conta)
+            # 3) delega criação de ordens por conta (repo retorna ID da ordem por conta)
             resultado_repo = self.repository.organizar_redis_por_conta(
                 requisicao_id, dados_requisicao, contas
             )
-            # esperado: {"detalhes":[{"id_conta":int,"status":"sucesso","ordem_id":int}, ...], ...}
+            # esperado: {"detalhes":[{"id_conta":int,"status":"sucesso","id_ordem":int}, ...], ...}
 
-            # mapa rápido por id_conta -> detalhe
+            # índice rápido por id_conta -> detalhe
             detalhes_repo_por_id: Dict[str, Dict[str, Any]] = {}
             for d in resultado_repo.get("detalhes", []):
-                cid = d.get("id_conta")
-                if cid is not None:
-                    detalhes_repo_por_id[str(int(cid))] = d
+                # aceita "id_conta" ou, como fallback, "conta" string numérica
+                _id_conta = d.get("id_conta")
+                if _id_conta is None:
+                    conta_str = d.get("conta")
+                    try:
+                        _id_conta = int(conta_str) if conta_str is not None else None
+                    except Exception:
+                        _id_conta = None
+                if _id_conta is not None:
+                    detalhes_repo_por_id[str(int(_id_conta))] = d
 
             # 4) monta/atualiza Redis por CONTA e persiste chave em contas
             RO = _redis_ordens()
@@ -143,38 +154,34 @@ class ProcessamentoService:
             for c in contas:
                 conta_id = int(c["id_conta"])
                 conta_nome = c.get("nome") or str(conta_id)
-                # detalhe do repo para esta conta (pega ordem_id, status etc.)
+
                 det = detalhes_repo_por_id.get(str(conta_id), {}) or {}
                 status_det = str(det.get("status", "sucesso")).lower()
-                ordem_id = det.get("ordem_id")
 
-                # estrutura base de retorno por conta
+                # ---------- aceita 'id_ordem' (seu padrão) e compat com 'ordem_id'/'order_id' ----------
+                ordem_id = (
+                    det.get("id_ordem")
+                    or det.get("ordem_id")
+                    or det.get("order_id")
+                )
+                try:
+                    ordem_id = int(ordem_id) if ordem_id is not None else None
+                except Exception:
+                    ordem_id = None
+
                 det_out = {
                     "conta": str(conta_id),
                     "status": "sucesso" if status_det in ("sucesso", "success", "ok") else status_det,
                     "token_gerado": False,
                     "token": None,
-                    "ordem_id": ordem_id,
-                }
-
-                if ordem_id is None or status_det not in ("sucesso", "success", "ok"):
-                    detalhes_resp.append(det_out)
-                    continue
-
-                # ordem a colocar/substituir no payload
-                nova_ordem = {
-                    "ordem_id": ordem_id,
-                    "id_robo": id_robo,
-                    "id_tipo_ordem": dados_requisicao.get("id_tipo_ordem"),
-                    "tipo": str(dados_requisicao.get("tipo")).upper(),
-                    "symbol": dados_requisicao.get("symbol"),
+                    "id_ordem": ordem_id,  # devolvemos no response para debug
                 }
 
                 # 4.1 chave ativa desta CONTA (se houver)
                 chave_existente: Optional[str] = self.repository.buscar_chave_token_ativa_por_id(conta_id)
 
+                # 4.2 payload base
                 if chave_existente:
-                    # carrega payload v2 e substitui a ordem do MESMO id_robo
                     payload_v2 = _ensure_payload_v2(RO.get(chave_existente)) or {
                         "conta": str(conta_id),
                         "requisicao_id": requisicao_id,
@@ -183,21 +190,45 @@ class ProcessamentoService:
                     }
                     payload_v2["conta"] = str(conta_id)
                     payload_v2["requisicao_id"] = requisicao_id
+                else:
+                    token_cru = _generate_token()
+                    chave_existente = _make_key(token_cru)
+                    payload_v2 = {
+                        "conta": str(conta_id),
+                        "requisicao_id": requisicao_id,
+                        "scope": "consulta_reqs",
+                        "ordens": [],
+                    }
+                    # persiste a chave nova na conta
+                    self.repository.atualizar_chave_token_conta_por_id(conta_id, chave_existente)
+                    det_out["token_gerado"] = True
+                    det_out["token"] = token_cru
+                    tokens_por_conta[str(conta_id)] = token_cru
+
+                # 4.3 se há ordem, insere/substitui a do mesmo robô
+                if status_det in ("sucesso", "success", "ok") and ordem_id is not None:
+                    nova_ordem = {
+                        "id_ordem": ordem_id,   # <-- usa 'id_ordem' como padrão
+                        "id_robo": id_robo,
+                        "id_tipo_ordem": dados_requisicao.get("id_tipo_ordem"),
+                        "tipo": str(dados_requisicao.get("tipo")).upper(),
+                        "symbol": dados_requisicao.get("symbol"),
+                    }
 
                     ordens_list = list(payload_v2.get("ordens") or [])
                     replaced = False
                     for i, o in enumerate(list(ordens_list)):
                         try:
                             if int(o.get("id_robo")) == id_robo:
-                                old_id = o.get("ordem_id")
+                                old_id = o.get("id_ordem") or o.get("ordem_id") or o.get("order_id")
                                 ordens_list[i] = nova_ordem
                                 replaced = True
-                                # exclui a ordem antiga no Postgres (se era de outro envio)
-                                if old_id and old_id != ordem_id:
-                                    try:
+                                # se trocou a ordem, exclui a antiga no banco
+                                try:
+                                    if old_id and int(old_id) != ordem_id:
                                         self.repository.excluir_ordem_por_id(int(old_id))
-                                    except Exception as e:
-                                        logger.warning("fail_delete_old_order", conta_id=conta_id, error=str(e))
+                                except Exception as e:
+                                    logger.warning("fail_delete_old_order", conta_id=conta_id, error=str(e))
                                 break
                         except Exception:
                             continue
@@ -205,34 +236,21 @@ class ProcessamentoService:
                         ordens_list.append(nova_ordem)
 
                     payload_v2["ordens"] = ordens_list
-                    RO.set(chave_existente, json.dumps(payload_v2), ex=self._token_ttl)
+                else:
+                    # Sem id_ordem: mantém/gera a chave mesmo assim para não travar o fluxo
+                    logger.info("sem_id_ordem_para_conta", conta_id=conta_id, requisicao_id=requisicao_id)
 
-                    # garante persistência da chave (id_conta)
-                    self.repository.atualizar_chave_token_conta_por_id(conta_id, chave_existente)
+                # 4.4 grava/renova no Redis
+                RO.set(chave_existente, json.dumps(payload_v2), ex=self._token_ttl)
 
+                # garante persistência da chave (id_conta) também quando já existia
+                self.repository.atualizar_chave_token_conta_por_id(conta_id, chave_existente)
+
+                # se a chave já existia e ainda não expusemos o token simples, expõe agora
+                if det_out["token"] is None and det_out["token_gerado"] is False:
                     det_out["token_gerado"] = True
                     det_out["token"] = chave_existente.split(":", 1)[1] if ":" in chave_existente else chave_existente
                     tokens_por_conta[str(conta_id)] = det_out["token"]
-
-                else:
-                    # 4.2 nova chave por CONTA
-                    token_cru = _generate_token()
-                    chave_token = _make_key(token_cru)
-
-                    payload_v2 = {
-                        "conta": str(conta_id),
-                        "requisicao_id": requisicao_id,
-                        "scope": "consulta_reqs",
-                        "ordens": [nova_ordem],
-                    }
-                    RO.set(chave_token, json.dumps(payload_v2), ex=self._token_ttl)
-
-                    # persiste a chave (id_conta)
-                    self.repository.atualizar_chave_token_conta_por_id(conta_id, chave_token)
-
-                    det_out["token_gerado"] = True
-                    det_out["token"] = token_cru  # se quiser mascarar, use _mask(token_cru)
-                    tokens_por_conta[str(conta_id)] = token_cru
 
                 # log útil por conta
                 self.repository.registrar_log(
