@@ -107,21 +107,26 @@ def criar_conta(
 ):
     # Verifica se a carteira existe e pertence ao usuário logado
     carteira = db.query(Carteira).filter(
-      Carteira.id == conta.id_carteira,
-      Carteira.id_user == user.id  # ou `Carteira.user_id` dependendo do nome no seu model
+        Carteira.id == conta.id_carteira,
+        Carteira.id_user == user.id
     ).first()
     if not carteira:
         raise HTTPException(status_code=403, detail="Carteira não encontrada ou não pertence a este usuário.")
 
-    # Verifica se a corretora existe
-    corretora = db.query(Corretora).filter_by(id=conta.id_corretora).first()
-    if not corretora:
-        raise HTTPException(status_code=404, detail="Corretora não encontrada")
+    # Corretora é OPCIONAL: só valida se veio informada
+    corretora_id: Optional[int] = None
+    corretora_nome: Optional[str] = None
+    if conta.id_corretora is not None:
+        corretora = db.query(Corretora).filter_by(id=conta.id_corretora).first()
+        if not corretora:
+            raise HTTPException(status_code=404, detail="Corretora não encontrada")
+        corretora_id = corretora.id
+        corretora_nome = corretora.nome
 
     nova_conta = Conta(
         nome=conta.nome,
         conta_meta_trader=conta.conta_meta_trader,
-        id_corretora=conta.id_corretora,
+        id_corretora=conta.id_corretora,  # pode ser None
         id_carteira=conta.id_carteira,
         margem_total=0.0,
         margem_disponivel=0.0,
@@ -136,8 +141,8 @@ def criar_conta(
         conta_meta_trader=nova_conta.conta_meta_trader,
         margem_total=nova_conta.margem_total,
         margem_disponivel=nova_conta.margem_disponivel,
-        id_corretora=corretora.id,
-        nome_corretora=corretora.nome,
+        id_corretora=corretora_id,
+        nome_corretora=corretora_nome,
     )
 
 
@@ -300,4 +305,3 @@ def deletar_robo_do_user(
     db.commit()
 
     return {"detail": "Robô do usuário deletado com sucesso."}
-
