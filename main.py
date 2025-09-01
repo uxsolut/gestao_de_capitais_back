@@ -18,8 +18,8 @@ from middleware.error_handler import ErrorHandlerMiddleware
 from models import corretoras  # noqa: F401
 from models import robos as m_robos  # noqa: F401
 from models import requisicoes as m_requisicao  # noqa: F401
-from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401  <-- novo
-from models import ordens as m_ordens  # noqa: F401               <-- novo
+from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401
+from models import ordens as m_ordens  # noqa: F401
 
 # --- Routers "públicos" de app (EXCETO processamento/consumo) ---
 from routers import (
@@ -72,16 +72,18 @@ def create_app(mode: str = "all") -> FastAPI:
     """
     Modo de execução:
       - "public": sobe todos os routers de app, EXCETO 'processamento' e 'consumo_processamento' (+ health).
-                  Documentação (Swagger/OpenAPI) ATIVADA.
-      - "write" : sobe somente o POST /api/v1/processar-requisicao (+ health). Watchdog ATIVADO. Docs DESLIGADAS.
-      - "read"  : sobe somente o consumo de processamento (+ health). Docs DESLIGADAS.
-      - "all"   : sobe tudo (comportamento legado). Docs ATIVADAS.
+      - "write" : sobe somente o POST /api/v1/processar-requisicao (+ health). Watchdog ATIVADO.
+      - "read"  : sobe somente o consumo de processamento (+ health).
+      - "all"   : sobe tudo (legado).
     """
 
-    # Exposição de docs por modo
+    # Exposição de docs por modo (mantém sua lógica)
     docs_enabled = mode in ("public", "all", "write", "read")
     docs_url = "/docs" if docs_enabled else None
     openapi_url = "/openapi.json" if docs_enabled else None
+
+    # Prefixo externo quando atrás do Nginx (env tem precedência)
+    root_path = os.getenv("ROOT_PATH", "/processar-requisicao" if mode == "write" else "")
 
     app = FastAPI(
         title="Meta Trade API",
@@ -90,6 +92,8 @@ def create_app(mode: str = "all") -> FastAPI:
         debug=settings.DEBUG,
         docs_url=docs_url,
         openapi_url=openapi_url,
+        root_path=root_path,
+        servers=[{"url": root_path or "/"}],  # ajuda o Swagger a montar a URL base
     )
 
     # Middlewares
@@ -105,7 +109,7 @@ def create_app(mode: str = "all") -> FastAPI:
     # Raiz simples
     @app.get("/")
     def read_root():
-        return {"mensagem": "API online com sucesso!", "mode": mode}
+        return {"mensagem": "API online com sucesso!", "mode": mode, "root_path": root_path}
 
     # Sempre expõe health
     app.include_router(health.router, prefix="/api/v1", tags=["Health"])
@@ -171,6 +175,8 @@ def create_app(mode: str = "all") -> FastAPI:
                 "bearerFormat": "Opaque",
             }
             openapi_schema["security"] = [{"BearerAuth": []}]
+            # força o prefixo base no Swagger
+            openapi_schema["servers"] = [{"url": root_path or "/"}]
             app.openapi_schema = openapi_schema
             return app.openapi_schema
 
