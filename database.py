@@ -192,25 +192,25 @@ class ProcessamentoRepository:
         dados_requisicao: Dict[str, Any],
     ) -> int:
         """
-        Cria uma ordem (schema novo):
-        id_robo_user, numero_unico, id_user, conta_meta_trader,
-        status='Inicializado', id_tipo_ordem (opcional), tipo::tipo_de_acao
+        Cria uma ordem com id_conta preenchido (necessário para o watchdog).
+        Mantém conta_meta_trader por compatibilidade.
         """
         with self.db.get_postgres_connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO ordens (
-                    id_robo_user, numero_unico, id_user, conta_meta_trader,
-                    status, id_tipo_ordem, tipo
+                    id_robo_user, id_user, id_conta, conta_meta_trader,
+                    numero_unico, status, id_tipo_ordem, tipo
                 )
-                VALUES (%s, %s, %s, %s, %s::ordem_status, %s, %s::tipo_de_acao)
+                VALUES (%s, %s, %s, %s, %s, %s::ordem_status, %s, %s::tipo_de_acao)
                 RETURNING id
                 """,
                 (
                     conta["id_robo_user"],
-                    f"REQ-{requisicao_id}-{conta['conta_meta_trader']}",
                     conta["id_user"],
+                    conta["id_conta"],
                     conta["conta_meta_trader"],
+                    f"REQ-{requisicao_id}-{conta['id_conta']}",  # pode manter o formato que preferir
                     "Inicializado",
                     dados_requisicao.get("id_tipo_ordem"),
                     (dados_requisicao.get("tipo") or "").upper(),
@@ -221,7 +221,7 @@ class ProcessamentoRepository:
             logger.debug(
                 "Ordem criada no PostgreSQL",
                 requisicao_id=requisicao_id,
-                conta=conta["conta_meta_trader"],
+                id_conta=conta["id_conta"],
                 ordem_id=ordem_id,
             )
             return ordem_id
@@ -429,50 +429,54 @@ class ProcessamentoRepository:
             logger.error("Erro ao registrar log", error=str(e))
 
     # ---------------- Helpers do WATCHDOG ----------------
-    def listar_ordens_inicializadas(self, limit: int = 500):
+    def listar_contas_inicializadas(self, limit: int = 500) -> List[Dict[str, Any]]:
         """
-        Contas que têm chave_do_token ativa (compat para o watchdog).
+        Contas que possuem PELO MENOS uma ordem 'Inicializado'.
+        Usado pelo watchdog para garantir/rotacionar token.
+        Retorna: [{"id": <id_conta>, "chave_do_token": <str|null>}]
         """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
-                    """
-                    SELECT id AS id, conta_meta_trader, chave_do_token
-                      FROM public.contas
-                     WHERE chave_do_token IS NOT NULL
-                  ORDER BY updated_at DESC NULLS LAST, id DESC
+                """
+                SELECT c.id AS id, c.chave_do_token
+                  FROM public.contas c
+                 WHERE EXISTS (
+                        SELECT 1
+                          FROM public.ordens o
+                         WHERE o.id_conta = c.id
+                               AND o.status = 'Inicializado'::ordem_status
+                           )
+                  ORDER BY c.id DESC
                      LIMIT %s
                     """,
                     (limit,),
                 )
-                rows = [dict(r) for r in c.fetchall()]
-                for r in rows:
-                    r.setdefault("numero_unico", None)  # compat
-                return rows
+                return [dict(r) for r in c.fetchall()]
         except Exception as e:
-            logger.error("listar_contas_com_token_erro", error=str(e))
+            logger.error("listar_contas_inicializadas_erro", error=str(e))
             return []
 
-    def listar_ordens_consumidas_com_token(self, limit: int = 200):
+
+    def listar_contas_consumidas_com_token(self, limit: int = 200) -> List[Dict[str, Any]]:
         """
-        Contas cujo token pode ser limpo com segurança:
-        - A conta tem chave_do_token
-        - NÃO existe nenhuma ordem NÃO-consumida (ou seja, todas as ordens da conta estão 'Consumido')
+        Contas que têm chave_do_token, mas NÃO possuem NENHUMA ordem 'Inicializado'.
+        Aqui podemos apagar a chave no Redis e zerar no banco.
+        Retorna: [{"id": <id_conta>, "chave_do_token": <str>}]
         """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
                     """
-                    SELECT c.id AS id,
-                           c.chave_do_token
+                    SELECT c.id AS id, c.chave_do_token
                       FROM public.contas c
                      WHERE c.chave_do_token IS NOT NULL
                        AND NOT EXISTS (
-                             SELECT 1
-                               FROM public.ordens o
-                              WHERE o.conta_meta_trader = c.conta_meta_trader
-                                AND o.status <> 'Consumido'::ordem_status
-                       )
+                            SELECT 1
+                              FROM public.ordens o
+                             WHERE o.id_conta = c.id
+                               AND o.status = 'Inicializado'::ordem_status
+                           )
                   ORDER BY c.id DESC
                      LIMIT %s
                     """,
