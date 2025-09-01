@@ -250,14 +250,15 @@ class ProcessamentoRepository:
         """
         Atualiza/persiste a chave_do_token na tabela public.contas (por ID).
         Aceita 'tok:...' ou o token cru; sempre salva com namespace.
+        Faz RETURNING para confirmar o que ficou salvo e loga.
         """
         try:
-            # normaliza: sempre com namespace
+            # normaliza a chave (sempre com namespace)
             ns = (getattr(settings, "OPAQUE_TOKEN_NAMESPACE", "") or "tok").strip()
             if chave:
                 chave_final = chave if ":" in chave else f"{ns}:{chave}"
             else:
-                chave_final = None  # permite limpar, se quiser
+                chave_final = None  # permite limpar se necessário
 
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
@@ -275,7 +276,7 @@ class ProcessamentoRepository:
 
             salvo = row["chave_do_token"] if row else None
             logger.info("chave_token_salva", id_conta=id_conta, chave_salva=salvo)
-            return bool(salvo)  # True se ficou algo salvo
+            return bool(salvo)
         except Exception as e:
             logger.error("atualizar_chave_token_conta_por_id_erro", id=id_conta, error=str(e))
             return False
