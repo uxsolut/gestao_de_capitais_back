@@ -209,26 +209,6 @@ class ProcessamentoRepository:
             )
             return ordem_id
 
-    # ---------- Token por CONTA ----------
-    def get_conta_by_meta(self, conta_meta: str) -> Optional[Dict[str, Any]]:
-        conta_meta = (conta_meta or "").strip()
-        with self.db.get_postgres_connection() as conn, conn.cursor() as c:
-            c.execute(
-                """
-                SELECT id, conta_meta_trader, chave_do_token
-                FROM public.contas
-                WHERE lower(btrim(conta_meta_trader)) = lower(btrim(%s))
-                LIMIT 1
-                """,
-                (conta_meta,),
-            )
-            row = c.fetchone()
-            return dict(row) if row else None
-
-    def buscar_chave_token_ativa_por_conta(self, conta_meta: str) -> Optional[str]:
-        row = self.get_conta_by_meta(conta_meta)
-        return (row.get("chave_do_token") or None) if row else None
-
     def atualizar_chave_token_conta_por_id(self, id_conta: int, chave: Optional[str]) -> bool:
         """
         Atualiza/persiste a chave_do_token na tabela public.contas (por ID).
@@ -262,26 +242,6 @@ class ProcessamentoRepository:
             return bool(salvo)
         except Exception as e:
             logger.error("atualizar_chave_token_conta_por_id_erro", id=id_conta, error=str(e))
-            return False
-
-
-    def atualizar_chave_token_conta_por_meta(self, conta_meta: str, chave: Optional[str]) -> bool:
-        conta_meta = (conta_meta or "").strip()
-        try:
-            with self.db.get_postgres_connection() as conn, conn.cursor() as c:
-                c.execute(
-                    """
-                    UPDATE public.contas
-                       SET chave_do_token = %s,
-                           updated_at = now()
-                     WHERE lower(btrim(conta_meta_trader)) = lower(btrim(%s))
-                    """,
-                    (chave, conta_meta),
-                )
-                conn.commit()
-                return c.rowcount > 0
-        except Exception as e:
-            logger.error("atualizar_chave_token_conta_por_meta_erro", conta_meta=conta_meta, error=str(e))
             return False
 
     # ---------------- Redis (fila por conta – legado mantido) ----------------
