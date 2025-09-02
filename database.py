@@ -157,19 +157,15 @@ class ProcessamentoRepository:
             return requisicao_id
 
     def buscar_contas_robos_ligados(self, id_robo: int) -> List[Dict[str, Any]]:
-        """
-        Contas com robô ligado para o id_robo informado.
-        """
         with self.db.get_postgres_connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT
-                    rdu.id AS id_robo_user,
+                    rdu.id      AS id_robo_user,
                     rdu.id_user AS id_user,
                     rdu.id_robo AS id_robo,
                     rdu.id_conta AS id_conta,
-                    c.conta_meta_trader,
-                    c.nome AS nome_conta
+                    c.nome      AS nome_conta
                 FROM robos_do_user rdu
                 JOIN contas c ON rdu.id_conta = c.id
                 WHERE rdu.id_robo = %s
@@ -177,40 +173,27 @@ class ProcessamentoRepository:
                 """,
                 (id_robo,),
             )
-            contas = [dict(r) for r in cursor.fetchall()]
-            logger.info(
-                "Contas com robôs ligados encontradas",
-                count=len(contas),
-                id_robo=id_robo,
-            )
-            return contas
+            return [dict(r) for r in cursor.fetchall()]
 
-    def _criar_ordem_pg(
-        self,
-        conta: Dict[str, Any],
-        requisicao_id: int,
-        dados_requisicao: Dict[str, Any],
-    ) -> int:
+    def _criar_ordem_pg(self, conta: Dict[str, Any], requisicao_id: int, dados_requisicao: Dict[str, Any]) -> int:
         """
-        Cria uma ordem com id_conta preenchido (necessário para o watchdog).
-        Mantém conta_meta_trader por compatibilidade.
+        Cria uma ordem ligada ao robô do usuário (id_robo_user). Não grava id_conta na tabela ordens
+        porque essa coluna não existe; a associação com a conta é via robos_do_user.id_conta.
         """
         with self.db.get_postgres_connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO ordens (
-                    id_robo_user, id_user, id_conta, conta_meta_trader,
-                    numero_unico, status, id_tipo_ordem, tipo
+                    id_robo_user, id_user, numero_unico, status, id_tipo_ordem, tipo
                 )
-                VALUES (%s, %s, %s, %s, %s, %s::ordem_status, %s, %s::tipo_de_acao)
+                VALUES (%s, %s, %s, %s::ordem_status, %s, %s::tipo_de_acao)
                 RETURNING id
                 """,
                 (
                     conta["id_robo_user"],
                     conta["id_user"],
-                    conta["id_conta"],
-                    conta["conta_meta_trader"],
-                    f"REQ-{requisicao_id}-{conta['id_conta']}",  # pode manter o formato que preferir
+                # numero_unico só como string (pode incluir o id_conta para facilitar leitura se quiser)
+                    f"REQ-{requisicao_id}-conta-{conta['id_conta']}",
                     "Inicializado",
                     dados_requisicao.get("id_tipo_ordem"),
                     (dados_requisicao.get("tipo") or "").upper(),
@@ -302,31 +285,14 @@ class ProcessamentoRepository:
             return False
 
     # ---------------- Redis (fila por conta – legado mantido) ----------------
-    def organizar_redis_por_conta(
-        self,
-        requisicao_id: int,
-        dados_requisicao: Dict[str, Any],
-        contas: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Mantém a organização legado por conta:
-        - lista 'conta:<num>:reqs' recebe o payload do POST (string JSON)
-        - set 'conta:<num>:robos' marca robos que pediram
-        - hash 'conta:<num>:meta' atualiza metadados
-        Além disso, cria uma ORDEM no PG e retorna 'ordem_id' por conta.
-        """
-        resultado: Dict[str, Any] = {
-            "contas_processadas": 0,
-            "contas_com_erro": 0,
-            "detalhes": [],
-        }
+    def organizar_redis_por_conta(self, requisicao_id: int, dados_requisicao: Dict[str, Any], contas: List[Dict[str, Any]]) -> Dict[str, Any]:
+        resultado = {"contas_processadas": 0, "contas_com_erro": 0, "detalhes": []}
 
         payload = {
             "requisicao_id": requisicao_id,
             "tipo": (dados_requisicao.get("tipo") or "").upper(),
             "symbol": dados_requisicao.get("symbol"),
             "id_robo": dados_requisicao.get("id_robo"),
-            # compat: campos antigos
             "comentario_ordem": dados_requisicao.get("comentario_ordem"),
             "quantidade": dados_requisicao.get("quantidade"),
             "preco": dados_requisicao.get("preco"),
@@ -334,16 +300,16 @@ class ProcessamentoRepository:
             "criado_em": datetime.utcnow().isoformat(),
         }
         payload_str = py_json.dumps(payload, ensure_ascii=False)
-        contas_vistas: set[str] = set()
+        contas_vistas: set[int] = set()
 
         for conta in contas:
             try:
-                conta_num = str(conta["conta_meta_trader"])
+                id_conta = int(conta["id_conta"])
                 id_robo_user = conta["id_robo_user"]
 
-                key_reqs = f"conta:{conta_num}:reqs"
-                key_set = f"conta:{conta_num}:robos"
-                key_meta = f"conta:{conta_num}:meta"
+                key_reqs = f"conta:{id_conta}:reqs"
+                key_set  = f"conta:{id_conta}:robos"
+                key_meta = f"conta:{id_conta}:meta"
 
                 pipe = self.redis.pipeline()
                 pipe.sadd(key_set, str(id_robo_user))
@@ -354,43 +320,31 @@ class ProcessamentoRepository:
                         "ultima_atualizacao": datetime.utcnow().isoformat(),
                     },
                 )
-                if conta_num not in contas_vistas:
+                if id_conta not in contas_vistas:
                     pipe.rpush(key_reqs, payload_str)
-                    contas_vistas.add(conta_num)
+                    contas_vistas.add(id_conta)
                 pipe.execute()
 
                 ordem_id = self._criar_ordem_pg(conta, requisicao_id, dados_requisicao)
                 resultado["contas_processadas"] += 1
                 resultado["detalhes"].append(
                     {
-                        "id_conta": conta["id_conta"],
-                        "conta": conta_num,
+                        "id_conta": id_conta,
+                        "conta": str(id_conta),
                         "status": "sucesso",
                         "id_ordem": ordem_id,
-                        "ordem_id": ordem_id,
                         "id_tipo_ordem": dados_requisicao.get("id_tipo_ordem"),
                         "tipo": (dados_requisicao.get("tipo") or "").upper(),
                     }
                 )
-
             except Exception as e:
-                logger.error(
-                    "Erro ao organizar Redis/PG para conta", conta=conta, error=str(e)
-                )
+                logger.error("Erro ao organizar Redis/PG para conta", conta=conta, error=str(e))
                 resultado["contas_com_erro"] += 1
                 resultado["detalhes"].append(
-                    {
-                        "conta": conta.get("conta_meta_trader", "unknown"),
-                        "status": "erro",
-                        "erro": str(e),
-                    }
+                    {"conta": str(conta.get("id_conta", "unknown")), "status": "erro", "erro": str(e)}
                 )
 
-        logger.info(
-            "Processamento (Redis + ordens) concluído",
-            requisicao_id=requisicao_id,
-            **resultado,
-        )
+        logger.info("Processamento (Redis + ordens) concluído", requisicao_id=requisicao_id, **resultado)
         return resultado
 
     # ---------------- Logs ----------------
@@ -427,70 +381,6 @@ class ProcessamentoRepository:
             logger.debug("Log registrado", tipo=tipo, usuario=id_usuario)
         except Exception as e:
             logger.error("Erro ao registrar log", error=str(e))
-
-    # ---------------- Helpers do WATCHDOG ----------------
-    def listar_contas_inicializadas(self, limit: int = 500) -> List[Dict[str, Any]]:
-        """
-        Contas com AO MENOS uma ordem 'Inicializado'.
-        Cobre dados novos (id_conta) e legados (conta_meta_trader com id_conta NULL).
-        """
-        try:
-            with self.db.get_postgres_connection() as conn, conn.cursor() as c:
-                c.execute(
-                    """
-                    SELECT c.id AS id, c.chave_do_token
-                      FROM public.contas c
-                     WHERE EXISTS (
-                            SELECT 1
-                              FROM public.ordens o
-                             WHERE o.status = 'Inicializado'::ordem_status
-                               AND (
-                                     o.id_conta = c.id
-                                  OR (o.id_conta IS NULL AND o.conta_meta_trader = c.conta_meta_trader)
-                               )
-                           )
-                  ORDER BY c.id DESC
-                     LIMIT %s
-                    """,
-                    (limit,),
-                )
-                return [dict(r) for r in c.fetchall()]
-        except Exception as e:
-            logger.error("listar_contas_inicializadas_erro", error=str(e))
-            return []
-
-
-    def listar_contas_consumidas_com_token(self, limit: int = 200) -> List[Dict[str, Any]]:
-        """
-        Contas com token, mas SEM NENHUMA ordem 'Inicializado'.
-        Considera tanto id_conta quanto legado por conta_meta_trader.
-        """
-        try:
-            with self.db.get_postgres_connection() as conn, conn.cursor() as c:
-                c.execute(
-                    """
-                    SELECT c.id AS id, c.chave_do_token
-                      FROM public.contas c
-                     WHERE c.chave_do_token IS NOT NULL
-                       AND NOT EXISTS (
-                            SELECT 1
-                              FROM public.ordens o
-                             WHERE o.status = 'Inicializado'::ordem_status
-                               AND (
-                                     o.id_conta = c.id
-                                  OR (o.id_conta IS NULL AND o.conta_meta_trader = c.conta_meta_trader)
-                               )
-                           )
-                  ORDER BY c.id DESC
-                     LIMIT %s
-                    """,
-                    (limit,),
-                )
-                return [dict(r) for r in c.fetchall()]
-        except Exception as e:
-            logger.error("listar_contas_consumidas_com_token_erro", error=str(e))
-            return []
-
     
     def limpar_chave_token_por_id(self, conta_id: int):
         """Zera a coluna chave_do_token da TABELA CONTAS."""
@@ -554,22 +444,24 @@ class ProcessamentoRepository:
             logger.error("buscar_chave_token_ativa_por_id_erro", id_conta=id_conta, error=str(e))
             return None
         
-    def listar_contas_com_inicializado(self, limit: int = 500):
+    def listar_contas_com_inicializado(self, limit: int = 2000):
         """
-        Contas que possuem AO MENOS uma ordem em 'Inicializado'.
-        Retorna: [{'id': <id_conta>, 'chave_do_token': <str|None>}]
+        CONTAS que possuem AO MENOS uma ORDEM em 'Inicializado'.
+        Join: ordens.id_robo_user -> robos_do_user.id -> robos_do_user.id_conta -> contas.id
+        Retorna: [{"id": <conta_id>, "chave_do_token": <str|None>}]
         """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
                     """
-                    SELECT c.id AS id,
-                           c.chave_do_token
+                    SELECT c.id AS id, c.chave_do_token
                       FROM public.contas c
                      WHERE EXISTS (
                             SELECT 1
                               FROM public.ordens o
-                             WHERE o.id_conta = c.id
+                              JOIN public.robos_do_user rdu
+                                ON rdu.id = o.id_robo_user
+                             WHERE rdu.id_conta = c.id
                                AND o.status = 'Inicializado'::ordem_status
                            )
                   ORDER BY c.id DESC
@@ -580,4 +472,34 @@ class ProcessamentoRepository:
                 return [dict(r) for r in c.fetchall()]
         except Exception as e:
             logger.error("listar_contas_com_inicializado_erro", error=str(e))
+            return []
+    def listar_contas_sem_inicializado_com_token(self, limit: int = 1000):
+        """
+        CONTAS que têm chave_do_token, mas NÃO possuem NENHUMA ordem em 'Inicializado'.
+        Aqui podemos apagar a chave no Redis e zerar no banco.
+        Retorna: [{"id": <conta_id>, "chave_do_token": <str>}]
+        """
+        try:
+            with self.db.get_postgres_connection() as conn, conn.cursor() as c:
+                c.execute(
+                    """
+                    SELECT c.id AS id, c.chave_do_token
+                      FROM public.contas c
+                     WHERE c.chave_do_token IS NOT NULL
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM public.ordens o
+                              JOIN public.robos_do_user rdu
+                                ON rdu.id = o.id_robo_user
+                             WHERE rdu.id_conta = c.id
+                               AND o.status = 'Inicializado'::ordem_status
+                           )
+                  ORDER BY c.id DESC
+                     LIMIT %s
+                    """,
+                    (limit,),
+                )
+                return [dict(r) for r in c.fetchall()]
+        except Exception as e:
+            logger.error("listar_contas_sem_inicializado_com_token_erro", error=str(e))
             return []
