@@ -19,14 +19,15 @@ class PaginaDinamica(Base):
 
     # ENUM já existente no Postgres; não criar nem listar valores aqui.
     dominio = Column(
-        postgresql.ENUM(
-            name="dominio_enum",
-            create_type=False,        # não cria/alterar o tipo
-            validate_strings=False,   # evita validação no client (deixa o Postgres validar)
-            native_enum=True,
-        ),
-        nullable=False,
-    )
+    postgresql.ENUM(
+        'pinacle.com.br', 'gestordecapitais.com',   # << valores explícitos
+        name='dominio_enum',
+        create_type=False,      # não recria o tipo (já existe no banco)
+        native_enum=True,
+        validate_strings=True,  # agora pode validar no client sem erro
+    ),
+    nullable=False,
+)
 
     slug = Column(Text, nullable=False)
     arquivo_zip = Column(LargeBinary, nullable=False)  # BYTEA
