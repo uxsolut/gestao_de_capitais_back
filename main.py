@@ -4,8 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from dotenv import load_dotenv
-load_dotenv()
+from dotenv import load_dotenv, find_dotenv
+from pathlib import Path
+# tenta .env ao lado do main.py; se não existir, tenta achar com find_dotenv()
+DOTENV_PATH = Path(__file__).with_name(".env")
+if DOTENV_PATH.exists():
+    load_dotenv(dotenv_path=DOTENV_PATH)
+else:
+    load_dotenv(find_dotenv())
 
 import os
 import structlog
