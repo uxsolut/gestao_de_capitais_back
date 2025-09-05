@@ -20,6 +20,7 @@ from models import robos as m_robos  # noqa: F401
 from models import requisicoes as m_requisicao  # noqa: F401
 from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401
 from models import ordens as m_ordens  # noqa: F401
+from models import paginas_dinamicas as m_paginas_dinamicas  # <<< ADICIONADO (garante o mapeamento)
 
 # --- Routers "públicos" de app (EXCETO processamento/consumo) ---
 from routers import (
@@ -36,6 +37,7 @@ from routers import (
     cliente_contas,
     health,
 )
+from routers import paginas_dinamicas  # <<< ADICIONADO (router das páginas dinâmicas)
 # NÃO importe processamento / consumo_processamento aqui em cima
 # (eles serão importados localmente dentro dos blocos de modo)
 
@@ -138,6 +140,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(projeto.router)
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
+        app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])  # <<< ADICIONADO
 
     elif mode == "all":
         # Tudo (legado)
@@ -152,6 +155,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(projeto.router)
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
+        app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])  # <<< ADICIONADO
 
         from routers import processamento, consumo_processamento  # import local
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
