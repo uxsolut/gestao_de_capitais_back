@@ -34,7 +34,7 @@ class ConsumirResp(BaseModel):
     quantidade: int
     ordens: List[Dict[str, Any]]
 
-router = APIRouter(prefix="/api/v1", tags=["ConsumoProcessamento"])
+router = APIRouter(prefix="/api/v1")
 
 # -------- Helpers Redis --------
 async def get_redis():
