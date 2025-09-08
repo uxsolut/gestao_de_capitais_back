@@ -16,3 +16,4 @@ httpx
 structlog
 python-dotenv
 pydantic-settings
+redis>=5,<6
