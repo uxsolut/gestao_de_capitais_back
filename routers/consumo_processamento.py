@@ -1,6 +1,7 @@
 # routers/consumo_processamento.py
 # -*- coding: utf-8 -*-
-from fastapi import APIRouter, Depends, HTTPException, status, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Any, Dict
 from sqlalchemy.orm import Session
@@ -9,7 +10,7 @@ from database import get_db
 from models.users import User
 from auth.auth import verificar_senha
 
-from redis import asyncio as redis  # <<=== substitui aioredis
+from redis import asyncio as redis  # substitui aioredis
 import json
 
 # ===================== CONFIG =====================
@@ -34,7 +35,8 @@ class ConsumirResp(BaseModel):
     quantidade: int
     ordens: List[Dict[str, Any]]
 
-router = APIRouter(prefix="/api/v1")
+# Agrupa no Swagger em "Processamento" e define o prefixo
+router = APIRouter(prefix="/api/v1", tags=["Processamento"])
 
 # -------- Helpers Redis --------
 async def get_redis():
@@ -45,10 +47,20 @@ async def get_redis():
         decode_responses=True,
     )
 
-async def validate_api_user_bearer(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
-    if not authorization or not authorization.lower().startswith("bearer "):
+# --------- Segurança (HTTP Bearer) ---------
+bearer_scheme = HTTPBearer(auto_error=False)
+
+async def validate_api_user_bearer(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
+) -> Dict[str, Any]:
+    """
+    Valida Authorization: Bearer <token> usando o esquema de segurança do Swagger.
+    Com isso, o header não aparece mais como parâmetro e o Swagger exibe o botão Authorize.
+    """
+    if credentials is None or not credentials.scheme or not credentials.credentials:
         raise HTTPException(status_code=401, detail="Missing Bearer token")
-    token = authorization.split(" ", 1)[1].strip()
+
+    token = credentials.credentials.strip()
     key = f"{TOKEN_HASH_PREFIX}{token}"
     r = await get_redis()
     try:
@@ -132,10 +144,21 @@ async def consumir_ordem(
 
     # 4) Atualizar status = 'Consumido'
     if ids:
-        db.execute(text("UPDATE ordens SET status='Consumido'::ordem_status WHERE id = ANY(:ids)"), {"ids": ids})
+        db.execute(
+            text("UPDATE ordens SET status='Consumido'::ordem_status WHERE id = ANY(:ids)"),
+            {"ids": ids},
+        )
     if nums:
-        db.execute(text("UPDATE ordens SET status='Consumido'::ordem_status WHERE numero_unico = ANY(:nums)"), {"nums": nums})
+        db.execute(
+            text("UPDATE ordens SET status='Consumido'::ordem_status WHERE numero_unico = ANY(:nums)"),
+            {"nums": nums},
+        )
     if ids or nums:
         db.commit()
 
-    return ConsumirResp(status="success", conta=body.id_conta, quantidade=len(ordens), ordens=ordens)
+    return ConsumirResp(
+        status="success",
+        conta=body.id_conta,
+        quantidade=len(ordens),
+        ordens=ordens,
+    )
