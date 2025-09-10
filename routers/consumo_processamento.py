@@ -39,7 +39,7 @@ from redis import asyncio as redis  # redis-py asyncio
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 
-TOKEN_HASH_PREFIX   = "tok:"                 # tok:<TOKEN_OPACO>  -> hash com {role, ...}
+TOKEN_HASH_PREFIX   = "tok:"                 # tok:<TOKEN_OPACO>  -> hash com {role, ttl, ...}
 ACCOUNT_TOKEN_KEY   = "conta:{id}:token"     # string contendo o token opaco por conta
 ACCOUNT_ORDERS_KEY  = "conta:{id}:orders"    # lista com ordens (strings JSON)
 
@@ -110,7 +110,7 @@ async def validate_api_user_bearer(
         return {"token": token, "ttl": ttl, **data}
     finally:
         try:
-            await r.aclose()
+            await r.close()
         except Exception:
             pass
 
@@ -166,16 +166,17 @@ async def consumir_ordem(
     if not token_conta_db:
         raise HTTPException(status_code=400, detail="Conta sem token")
 
-    # 3) Redis: valida token da conta e drena ordens
+    # 3) Redis: valida token da conta e drena ordens (EVAL correto no redis-py)
     token_key  = ACCOUNT_TOKEN_KEY.format(id=body.id_conta)
     orders_key = ACCOUNT_ORDERS_KEY.format(id=body.id_conta)
 
     r = get_redis()
     try:
-        res = await r.eval(LUA_DRENO, keys=[token_key, orders_key], args=[token_conta_db])
+        # assinatura: eval(script, numkeys, *keys_e_args)
+        res = await r.eval(LUA_DRENO, 2, token_key, orders_key, token_conta_db)
     finally:
         try:
-            await r.aclose()
+            await r.close()
         except Exception:
             pass
 
