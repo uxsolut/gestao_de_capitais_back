@@ -17,6 +17,11 @@ from database import get_db
 from models.users import User
 from auth.auth import verificar_senha
 
+# ⚠️ IMPORTS SOMENTE PARA REGISTRAR OS MAPEAMENTOS (evitam InvalidRequestError)
+from models.aplicacao import Aplicacao  # noqa: F401
+from models.requisicoes import Requisicao  # noqa: F401
+from models.robos_do_user import RoboDoUser  # noqa: F401
+
 from redis import asyncio as redis  # cliente asyncio oficial do redis-py
 
 
