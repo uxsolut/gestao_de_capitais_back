@@ -4,21 +4,35 @@ from sqlalchemy.sql import func
 from database import Base
 import enum
 
-
-# Enum do tipo_log (você pode ajustar os valores conforme o ENUM real do banco)
+# ---- Enum Python (mantenha os mesmos valores do enum do Postgres) ----
 class TipoLogEnum(str, enum.Enum):
     INFO = "INFO"
     ERRO = "ERRO"
     AVISO = "AVISO"
-    # Adicione aqui os valores reais do enum "tipo_log" se forem diferentes
+    # acrescente se o seu enum do banco tiver mais
 
+# IMPORTA A CLASSE para evitar resolução por string
+from models.aplicacao import Aplicacao
+# (opcional) pode manter os demais como string; se quiser, também pode importar RoboDoUser/Robo/Conta/User
 
 class Log(Base):
     __tablename__ = "logs"
 
     id = Column(Integer, primary_key=True, index=True)
     data_hora = Column(DateTime, nullable=False, default=func.now())
-    tipo = Column(Enum(TipoLogEnum), nullable=False)
+
+    # Aponta para o tipo ENUM já existente no Postgres (tipologenum)
+    tipo = Column(
+        Enum(
+            TipoLogEnum,
+            name="tipologenum",      # <- nome do tipo no banco
+            native_enum=True,
+            create_type=False,       # <- não recriar o tipo
+            validate_strings=True,
+        ),
+        nullable=False,
+    )
+
     conteudo = Column(Text, nullable=False)
 
     id_usuario = Column(Integer, ForeignKey("users.id"))
@@ -29,9 +43,12 @@ class Log(Base):
 
     criado_em = Column(DateTime, nullable=False, default=func.now())
 
-    # Relacionamentos
+    # ---- Relacionamentos ----
     usuario = relationship("User", back_populates="logs")
-    aplicacao = relationship("Aplicacao", back_populates="logs")
+    aplicacao = relationship(Aplicacao, back_populates="logs")  # <- usa a CLASSE
     robo = relationship("Robo", back_populates="logs")
     robo_user = relationship("RoboDoUser", back_populates="logs")
     conta = relationship("Conta", back_populates="logs")
+
+    def __repr__(self):
+        return f"<Log id={self.id} tipo={self.tipo} id_aplicacao={self.id_aplicacao} id_robo_user={self.id_robo_user}>"
