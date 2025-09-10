@@ -16,18 +16,20 @@ from database import get_db
 from models.users import User
 from auth.auth import verificar_senha
 
-# ⚠️ manter estes imports para registrar mapeamentos
+# ⚠️ manter estes imports para registrar mapeamentos no processo 9102
 from models.aplicacao import Aplicacao  # noqa: F401
 from models.requisicoes import Requisicao  # noqa: F401
 from models.robos_do_user import RoboDoUser  # noqa: F401
-import models.projeto
-import models.tipo_de_ordem 
-import models.ordens
-import models.robos             
-import models.users             
-import models.carteiras        
-import models.contas       
-import models.corretoras     
+import models.projeto  # noqa: F401
+import models.tipo_de_aplicacao  # noqa: F401
+import models.versao_aplicacao  # noqa: F401
+import models.tipo_de_ordem  # noqa: F401
+import models.ordens  # noqa: F401
+import models.robos  # noqa: F401
+import models.users  # noqa: F401
+import models.carteiras  # noqa: F401
+import models.contas  # noqa: F401
+import models.corretoras  # noqa: F401
 
 from redis import asyncio as redis  # redis-py asyncio
 
@@ -41,7 +43,7 @@ TOKEN_HASH_PREFIX   = "tok:"                 # tok:<TOKEN_OPACO>  -> hash com {r
 ACCOUNT_TOKEN_KEY   = "conta:{id}:token"     # string contendo o token opaco por conta
 ACCOUNT_ORDERS_KEY  = "conta:{id}:orders"    # lista com ordens (strings JSON)
 
-# !!! ajuste para o nome REAL no seu banco !!!
+# nome REAL da coluna do token em public.contas
 ACCOUNT_TOKEN_COLUMN = "chave_do_token"
 
 # ======================================================================
@@ -70,9 +72,7 @@ router = APIRouter(prefix="/api/v1", tags=["Processamento"])
 # ======================================================================
 
 def get_redis() -> redis.Redis:
-    """
-    Cria cliente Redis asyncio. from_url **não é awaitable**.
-    """
+    """Cria cliente Redis asyncio. from_url retorna o cliente (não precisa await)."""
     return redis.from_url(
         REDIS_URL,
         encoding="utf-8",
@@ -145,26 +145,28 @@ async def consumir_ordem(
     if not user or not verificar_senha(body.senha, user.senha):
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
-    # 2) Confirma que a conta pertence ao usuário
-    dono_conta = db.execute(
-        text("SELECT id_user FROM contas WHERE id = :id"),
-        {"id": body.id_conta},
-    ).scalar()
-    if dono_conta is None:
-        raise HTTPException(status_code=404, detail="Conta não encontrada")
-    if int(dono_conta) != int(user.id):
+    # 2) Confirma que a conta pertence ao usuário via contas -> carteiras(id_user)
+    #    e já traz o token da conta numa tacada só.
+    row = db.execute(
+        text(f"""
+            SELECT c.{ACCOUNT_TOKEN_COLUMN}
+            FROM contas c
+            JOIN carteiras ca ON ca.id = c.id_carteira
+            WHERE c.id = :conta_id
+              AND ca.id_user = :user_id
+            LIMIT 1
+        """),
+        {"conta_id": body.id_conta, "user_id": user.id},
+    ).first()
+
+    if not row:
         raise HTTPException(status_code=403, detail="Conta não pertence ao usuário")
 
-    # 3) Busca token da conta no Postgres
-    token_row = db.execute(
-        text(f"SELECT {ACCOUNT_TOKEN_COLUMN} FROM contas WHERE id = :id"),
-        {"id": body.id_conta},
-    ).first()
-    if not token_row or not token_row[0]:
+    token_conta_db: Optional[str] = row[0]
+    if not token_conta_db:
         raise HTTPException(status_code=400, detail="Conta sem token")
-    token_conta_db: str = token_row[0]
 
-    # 4) Redis: valida token da conta e drena ordens
+    # 3) Redis: valida token da conta e drena ordens
     token_key  = ACCOUNT_TOKEN_KEY.format(id=body.id_conta)
     orders_key = ACCOUNT_ORDERS_KEY.format(id=body.id_conta)
 
@@ -185,7 +187,7 @@ async def consumir_ordem(
             raise HTTPException(status_code=401, detail="Token inválido para esta conta")
         raise HTTPException(status_code=400, detail=f"Erro: {code}")
 
-    # 5) Parseia ordens e coleta ids/nums para atualizar status
+    # 4) Parseia ordens e coleta ids/nums para atualizar status
     itens: List[str] = res or []
     ordens: List[Dict[str, Any]] = []
     ids: List[int] = []
@@ -197,13 +199,16 @@ async def consumir_ordem(
         except Exception:
             obj = {"raw": raw}
         ordens.append(obj)
-        if isinstance(obj, dict):
-            if isinstance(obj.get("id"), int):
-                ids.append(obj["id"])
-            if isinstance(obj.get("numero_unico"), str):
-                nums.append(obj["numero_unico"])
 
-    # 6) Atualiza status no Postgres (quando houver algo)
+        if isinstance(obj, dict):
+            _id = obj.get("id")
+            if isinstance(_id, int):
+                ids.append(_id)
+            num = obj.get("numero_unico")
+            if isinstance(num, str):
+                nums.append(num)
+
+    # 5) Atualiza status no Postgres (quando houver algo)
     if ids:
         db.execute(
             text("UPDATE ordens SET status='Consumido'::ordem_status WHERE id = ANY(:ids)"),
@@ -217,6 +222,7 @@ async def consumir_ordem(
     if ids or nums:
         db.commit()
 
+    # 6) Resposta
     return ConsumirResp(
         status="success",
         conta=body.id_conta,
