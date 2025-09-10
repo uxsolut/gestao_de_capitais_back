@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from database import Base
+from models.aplicacao import Aplicacao
 
 class RoboDoUser(Base):
     __tablename__ = "robos_do_user"
