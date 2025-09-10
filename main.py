@@ -21,6 +21,10 @@ from database import engine, Base
 from middleware.error_handler import ErrorHandlerMiddleware
 
 # --- Carrega models para garantir os mapeamentos/tabelas ---
+import models
+from sqlalchemy.orm import configure_mappers
+configure_mappers()
+
 from models import corretoras  # noqa: F401
 from models import robos as m_robos  # noqa: F401
 from models import requisicoes as m_requisicao  # noqa: F401
