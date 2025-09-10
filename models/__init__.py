@@ -1,3 +1,5 @@
+from models.aplicacao import Aplicacao
+from models.requisicoes import Requisicao
 from models.contas import Conta
 from models.corretoras import Corretora
 from models.robos import Robo
@@ -9,5 +11,3 @@ from models.relatorios import Relatorio
 from models.logs import Log
 from models.versao_aplicacao import VersaoAplicacao
 from models.tipo_de_aplicacao import TipoDeAplicacao
-from models.aplicacao import Aplicacao
-from models.requisicoes import Requisicao
