@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from database import Base
-from models.aplicacao import Aplicacao
+from models.aplicacao import Aplicacao  # usar a CLASSE no relationship
 
 class RoboDoUser(Base):
     __tablename__ = "robos_do_user"
@@ -24,11 +24,22 @@ class RoboDoUser(Base):
     robo = relationship("Robo", back_populates="robos_do_user")
     carteira = relationship("Carteira", back_populates="robos_do_user")
     conta = relationship("Conta", back_populates="robos_do_user")
-    aplicacao = relationship("Aplicacao", back_populates="robos_do_user")
+
+    # usar a CLASSE diretamente para evitar falha de resolução por string
+    aplicacao = relationship(Aplicacao, back_populates="robos_do_user")
+
     logs = relationship("Log", back_populates="robo_user", cascade="all, delete-orphan")
 
+    # 1-1 opcional para última ordem + 1-N para histórico
     ordem = relationship("Ordem", foreign_keys=[id_ordem])
-    ordens = relationship("Ordem", back_populates="robo_user", foreign_keys="[Ordem.id_robo_user]")
+    ordens = relationship(
+        "Ordem",
+        back_populates="robo_user",
+        foreign_keys="Ordem.id_robo_user",
+    )
 
     def __repr__(self):
-        return f"<RobosDoUser(id={self.id}, id_user={self.id_user}, id_robo={self.id_robo}, ligado={self.ligado}, ativo={self.ativo})>"
+        return (
+            f"<RobosDoUser(id={self.id}, id_user={self.id_user}, "
+            f"id_robo={self.id_robo}, ligado={self.ligado}, ativo={self.ativo})>"
+        )

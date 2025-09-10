@@ -19,10 +19,11 @@ class VersaoAplicacao(Base):
     # Relacionamentos
     user = relationship("User", back_populates="versoes_aplicacao")
 
+    # N -> 1 com Aplicacao (bate com Aplicacao.versoes)
     aplicacao = relationship(
         "Aplicacao",
         back_populates="versoes",
-        foreign_keys=[id_aplicacao]  # 👈 necessário
+        foreign_keys=[id_aplicacao],
     )
 
     def __repr__(self):
