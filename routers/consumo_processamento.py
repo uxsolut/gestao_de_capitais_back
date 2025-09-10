@@ -20,6 +20,7 @@ from auth.auth import verificar_senha
 from models.aplicacao import Aplicacao  # noqa: F401
 from models.requisicoes import Requisicao  # noqa: F401
 from models.robos_do_user import RoboDoUser  # noqa: F401
+import models.projeto
 
 from redis import asyncio as redis  # redis-py asyncio
 
