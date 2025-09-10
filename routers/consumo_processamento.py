@@ -21,6 +21,13 @@ from models.aplicacao import Aplicacao  # noqa: F401
 from models.requisicoes import Requisicao  # noqa: F401
 from models.robos_do_user import RoboDoUser  # noqa: F401
 import models.projeto
+import models.tipo_de_ordem 
+import models.ordens
+import models.robos             
+import models.users             
+import models.carteiras        
+import models.contas       
+import models.corretoras     
 
 from redis import asyncio as redis  # redis-py asyncio
 
