@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import json
 from typing import Optional, List, Any, Dict, Tuple
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import APIRouter, Depends, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -75,15 +76,22 @@ router = APIRouter(prefix="/api/v1", tags=["Processamento"])
 # Redis helpers
 # ======================================================================
 
+def _bump_db(url: str, db_index: int) -> str:
+    """
+    Força o DB no REDIS_URL trocando apenas o path (/0 -> /<db_index>).
+    O DB definido no URL tem precedência sobre o parâmetro 'db' do from_url.
+    """
+    p = urlparse(url)
+    new_path = f"/{db_index}"
+    return urlunparse((p.scheme, p.netloc, new_path, p.params, p.query, p.fragment))
+
 def _redis_global() -> aioredis.Redis:
     """DB 0 – tokens opacos de 'api_user' (Bearer do Swagger)."""
-    return aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True, db=0)
-
+    return aioredis.from_url(_bump_db(REDIS_URL, 0), encoding="utf-8", decode_responses=True)
 
 def _redis_ordens() -> aioredis.Redis:
     """DB 1 – onde o writer grava as ordens por conta em tok:<token>."""
-    return aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True, db=1)
-
+    return aioredis.from_url(_bump_db(REDIS_URL, 1), encoding="utf-8", decode_responses=True)
 
 def _ensure_tok_prefix(k: str) -> str:
     """Garante que a chave tenha o prefixo de namespace (ex.: 'tok:')."""
