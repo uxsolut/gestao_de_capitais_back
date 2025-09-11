@@ -1,36 +1,67 @@
 # schemas/robo.py
-from typing import Optional, List
+from typing import List, Optional
 from datetime import datetime
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
-# -------------------------------------------------
-# Versão "canônica" (singular) usada internamente
-# -------------------------------------------------
-class RoboBase(BaseModel):
+# --------------------------------------------------------------------
+# CREATE (LEGADO) em JSON – /robos/json (sem arquivo) | campos opcionais
+# --------------------------------------------------------------------
+class RoboCreateJSON(BaseModel):
     nome: str = Field(..., min_length=1)
     performance: Optional[List[str]] = None
-    id_ativo: Optional[int] = None  # FK opcional para ativos.id
+    id_ativo: Optional[int] = None
 
-class RoboCreate(RoboBase):
-    pass
+    @field_validator("performance")
+    @classmethod
+    def _val_performance(cls, v: Optional[List[str]]):
+        if v is None:
+            return v
+        if any(not isinstance(x, str) for x in v):
+            raise ValueError("O campo 'performance' deve conter apenas strings.")
+        return v
 
+
+# --------------------------------------------------------------------
+# UPDATE parcial (útil para PATCH/PUT)
+# --------------------------------------------------------------------
 class RoboUpdate(BaseModel):
-    # útil se depois quiser PATCH/PUT parcial
     nome: Optional[str] = Field(None, min_length=1)
     performance: Optional[List[str]] = None
     id_ativo: Optional[int] = None
 
-class RoboOut(RoboBase):
-    id: int
-    criado_em: datetime
+    @field_validator("performance")
+    @classmethod
+    def _val_performance_update(cls, v: Optional[List[str]]):
+        if v is None:
+            return v
+        if any(not isinstance(x, str) for x in v):
+            raise ValueError("O campo 'performance' deve conter apenas strings.")
+        return v
 
-    # Pydantic v2
+
+# --------------------------------------------------------------------
+# READ / OUT – não retornamos o binário; apenas um indicador
+# --------------------------------------------------------------------
+class RoboOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-# -------------------------------------------------
-# ALIASES para compatibilidade com nomes antigos
-# (evita quebrar imports existentes no projeto)
-# -------------------------------------------------
-RobosBase = RoboBase
-RobosCreate = RoboCreate
+    id: int
+    nome: str
+    criado_em: datetime
+    performance: Optional[List[str]] = None
+    id_ativo: Optional[int] = None
+    tem_arquivo: bool = False  # True se arquivo_robo tiver conteúdo
+
+
+class RoboOutList(BaseModel):
+    itens: List[RoboOut]
+
+
+# --------------------------------------------------------------------
+# ALIASES p/ compatibilidade com importações antigas
+# --------------------------------------------------------------------
+RoboBase = RoboCreateJSON
+RoboCreate = RoboCreateJSON
+RobosBase = RoboCreateJSON
+RobosCreate = RoboCreateJSON
 Robos = RoboOut
