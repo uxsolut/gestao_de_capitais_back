@@ -74,7 +74,7 @@ class ProcessamentoService:
     Política (somente por CONTA/id_conta):
       - Seleciona contas que tenham o robô ligado (robos_do_user.ligado = true) e id_conta definido.
       - Um token opaco por CONTA (chave Redis por conta).
-      - Se já houver payload para a conta, SUBSTITUI a ordem do mesmo id_robo; senão, insere.
+      - Se já houver payload para a conta, SUBSTITUI a ordem do mesmo id_robo_user; senão, insere.
       - Persiste a chave (string completa, ex.: "tok:abc...") em contas.chave_do_token.
     """
 
@@ -155,6 +155,9 @@ class ProcessamentoService:
                 conta_id = int(c["id_conta"])
                 conta_nome = c.get("nome") or str(conta_id)
 
+                # >>> id_robo_user desta conta (chave para substituição)
+                id_robo_user = int(c["id_robo_user"])
+
                 det = detalhes_repo_por_id.get(str(conta_id), {}) or {}
                 status_det = str(det.get("status", "sucesso")).lower()
 
@@ -205,10 +208,11 @@ class ProcessamentoService:
                     det_out["token"] = token_cru
                     tokens_por_conta[str(conta_id)] = token_cru
 
-                # 4.3 se há ordem, insere/substitui a do mesmo robô
+                # 4.3 se há ordem, insere/substitui a do mesmo ROBO_DO_USER
                 if status_det in ("sucesso", "success", "ok") and ordem_id is not None:
                     nova_ordem = {
-                        "id_ordem": ordem_id,   # <-- usa 'id_ordem' como padrão
+                        "id_ordem": ordem_id,   # padrão no payload
+                        "id_robo_user": id_robo_user,   # >>> chave de substituição
                         "id_robo": id_robo,
                         "id_tipo_ordem": dados_requisicao.get("id_tipo_ordem"),
                         "tipo": str(dados_requisicao.get("tipo")).upper(),
@@ -219,7 +223,8 @@ class ProcessamentoService:
                     replaced = False
                     for i, o in enumerate(list(ordens_list)):
                         try:
-                            if int(o.get("id_robo")) == id_robo:
+                            # >>> compara por id_robo_user (não apenas id_robo)
+                            if int(o.get("id_robo_user")) == id_robo_user:
                                 old_id = o.get("id_ordem") or o.get("ordem_id") or o.get("order_id")
                                 ordens_list[i] = nova_ordem
                                 replaced = True
