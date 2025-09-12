@@ -4,7 +4,7 @@ import json
 
 from fastapi import (
     APIRouter, Depends, HTTPException, status, Path, Response,
-    UploadFile, File, Form, Body
+    UploadFile, File, Form, Body, Request
 )
 from sqlalchemy.orm import Session
 
@@ -41,7 +41,7 @@ def _clean_optional_int(raw: Optional[str]) -> Optional[int]:
     except ValueError:
         raise HTTPException(status_code=400, detail="id_ativo deve ser inteiro ou ausente.")
 
-def _parse_performance_field(value: Optional[str]) -> Optional[List[str]]:
+def _parse_performance_json(value: Optional[str]) -> Optional[List[str]]:
     """
     Aceita:
       - None/''                 -> None
@@ -95,23 +95,38 @@ def obter_robo(
     summary="Criar Robô (multipart/form-data, arquivo opcional)",
 )
 async def criar_robo_multipart(
+    # campos básicos
     nome: str = Form(..., description="Nome do robô"),
     id_ativo: Optional[str] = Form(None, description="ID do ativo (opcional)"),
-    performance: Optional[str] = Form(
-        None, description='Lista JSON (ex.: ["10%","15%"]) ou texto simples.'
-    ),
-    arquivo_robo: Optional[UploadFile] = File(
-        None, description="Arquivo do robô (opcional, salvo como bytea)"
-    ),
+
+    # performance pode vir como lista (campos repetidos) OU como JSON string
+    performance: Optional[List[str]] = Form(None, description="Pode enviar repetindo a chave performance=a&performance=b"),
+    performance_json: Optional[str] = Form(None, description='Alternativa: JSON string ex. ["a","b"]'),
+
+    # arquivo pode vir em 'arquivo_robo' OU 'arquivo'
+    arquivo_robo: Optional[UploadFile] = File(None, description="Arquivo do robô (bytea)"),
+    arquivo: Optional[UploadFile] = File(None, description="Alias para arquivo do robô"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    perf_list = _parse_performance_field(performance)
+    # id_ativo
     id_ativo_int = _clean_optional_int(id_ativo)
 
+    # performance
+    perf_list: Optional[List[str]] = None
+    if performance is not None:
+        # já veio como lista via campos repetidos
+        perf_list = [p for p in performance if isinstance(p, str) and p.strip() != ""]
+        if not perf_list:
+            perf_list = None
+    elif performance_json is not None:
+        perf_list = _parse_performance_json(performance_json)
+
+    # arquivo
+    up = arquivo_robo or arquivo
     content: Optional[bytes] = None
-    if arquivo_robo is not None:
-        content = await arquivo_robo.read()
+    if up is not None:
+        content = await up.read()
         if content == b"":
             content = None
 
@@ -153,19 +168,11 @@ def criar_robo_json(
     cache_service.clear_pattern("robos:*")
     return _to_schema(novo)
 
-# ---------- PUT: Atualizar robô ----------
-def _apply_updates(robo: Robo, data: dict) -> None:
-    if "id_ativo" in data and isinstance(data["id_ativo"], str):
-        s = data["id_ativo"].strip().lower()
-        data["id_ativo"] = None if s in ("", "null", "none") else int(s)
-    for field in ("nome", "performance", "id_ativo"):
-        if field in data:
-            setattr(robo, field, data[field])
-
+# ---------- PUT: Atualizar robô (aceita JSON ou MULTIPART) ----------
 @router.put("/{id}", response_model=RoboSchema, summary="Atualizar Robô")
-def atualizar_robo(
+async def atualizar_robo(
+    request: Request,
     id: int = Path(..., gt=0),
-    payload: dict = Body(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -173,10 +180,58 @@ def atualizar_robo(
     if not robo:
         raise HTTPException(status_code=404, detail="Robô não encontrado")
 
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=422, detail="Corpo inválido")
+    ctype = request.headers.get("content-type", "").lower()
 
-    _apply_updates(robo, payload)
+    # -------- multipart (FormData) --------
+    if "multipart/form-data" in ctype:
+        form = await request.form()
+
+        # nome
+        if "nome" in form:
+            nome = str(form.get("nome")).strip()
+            if nome:
+                robo.nome = nome
+
+        # id_ativo
+        if "id_ativo" in form:
+            robo.id_ativo = _clean_optional_int(str(form.get("id_ativo")))
+
+        # performance: valores repetidos + opção JSON
+        perf_vals = form.getlist("performance")
+        perf_json_val = form.get("performance_json")
+        perf_list: Optional[List[str]] = None
+        if perf_vals:
+            perf_list = [str(x) for x in perf_vals if str(x).strip() != ""]
+        elif perf_json_val is not None:
+            perf_list = _parse_performance_json(str(perf_json_val))
+        if perf_list is not None:
+            robo.performance = perf_list
+
+        # arquivo: aceita "arquivo_robo" ou "arquivo"
+        up = form.get("arquivo_robo") or form.get("arquivo")
+        if isinstance(up, UploadFile):
+            content = await up.read()
+            robo.arquivo_robo = content if content != b"" else None
+
+    # -------- JSON (legado) --------
+    else:
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=422, detail="Corpo inválido")
+
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="Corpo inválido")
+
+        # normaliza id_ativo vindo como string vazia/null
+        if "id_ativo" in payload and isinstance(payload["id_ativo"], str):
+            s = payload["id_ativo"].strip().lower()
+            payload["id_ativo"] = None if s in ("", "null", "none") else int(s)
+
+        for field in ("nome", "performance", "id_ativo"):
+            if field in payload:
+                setattr(robo, field, payload[field])
+
     db.commit()
     db.refresh(robo)
 
