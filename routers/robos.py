@@ -156,27 +156,33 @@ async def atualizar_robo(
     if "multipart/form-data" in ctype:
         form = await request.form()
 
-        # nome
+        # nome — só atualiza se veio e não é vazio
         if "nome" in form:
-            nome = str(form.get("nome")).strip()
+            nome = (form.get("nome") or "").strip()
             if nome:
                 robo.nome = nome
+            # se quiser permitir "limpar" o nome, troque para: else: robo.nome = None
 
-        # id_ativo
+        # id_ativo — só atualiza se veio no form (permite limpar com vazio)
         if "id_ativo" in form:
             robo.id_ativo = _clean_optional_int(str(form.get("id_ativo")))
 
-        # performance: APENAS lista de chaves repetidas
-        perf_vals = form.getlist("performance")
-        if perf_vals is not None:
-            votos = [str(x) for x in perf_vals if str(x).strip() != ""]
-            robo.performance = votos if votos else None
+        # performance — só atualiza se a CHAVE existir no form
+        if "performance" in form:
+            perf_vals = form.getlist("performance")  # performance=a&performance=b
+            lista = [str(x).strip() for x in perf_vals if str(x).strip() != ""]
+            robo.performance = lista if lista else None
 
-        # arquivo: somente "arquivo_robo"
-        up = form.get("arquivo_robo")
-        if isinstance(up, UploadFile):
-            content = await up.read()
-            robo.arquivo_robo = content if content != b"" else None
+        # arquivo_robo — só atualiza se veio no form (substitui apenas se arquivo enviado)
+        if "arquivo_robo" in form:
+            up = form.get("arquivo_robo")
+            if isinstance(up, UploadFile):
+                content = await up.read()
+                if content and content != b"":
+                    robo.arquivo_robo = content
+                # se quiser permitir remover o arquivo enviando vazio, mude para:
+                # else:
+                #     robo.arquivo_robo = None
 
     # -------- JSON (legado) --------
     else:
@@ -188,13 +194,28 @@ async def atualizar_robo(
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="Corpo inválido")
 
-        if "id_ativo" in payload and isinstance(payload["id_ativo"], str):
-            s = payload["id_ativo"].strip().lower()
-            payload["id_ativo"] = None if s in ("", "null", "none") else int(s)
+        # nome — só se enviado
+        if "nome" in payload:
+            val = (payload["nome"] or "").strip()
+            if val:
+                robo.nome = val
 
-        for field in ("nome", "performance", "id_ativo"):
-            if field in payload:
-                setattr(robo, field, payload[field])
+        # id_ativo — só se enviado
+        if "id_ativo" in payload:
+            val = payload["id_ativo"]
+            robo.id_ativo = _clean_optional_int(str(val)) if val is not None else None
+
+        # performance — só se enviado
+        if "performance" in payload:
+            p = payload["performance"]
+            if p is None:
+                robo.performance = None
+            elif isinstance(p, list) and all(isinstance(x, str) for x in p):
+                robo.performance = [s for s in p if s.strip() != ""] or None
+            elif isinstance(p, str):
+                robo.performance = [p] if p.strip() else None
+            else:
+                raise HTTPException(status_code=400, detail='Formato inválido para "performance".')
 
     db.commit()
     db.refresh(robo)
