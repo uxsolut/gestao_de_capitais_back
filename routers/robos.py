@@ -5,6 +5,8 @@ from fastapi import (
     UploadFile, File, Form
 )
 from sqlalchemy.orm import Session
+import re
+from unicodedata import normalize
 
 from models.robos import Robo
 from schemas.robos import RobosCreate, Robos as RoboSchema
@@ -176,14 +178,38 @@ async def atualizar_robo_multipart(
         content = await arquivo_robo.read()
         if content and content != b"":
             robo.arquivo_robo = content
-        # Se quiser permitir remover arquivo ao enviar vazio, troque o else por:
-        # else: robo.arquivo_robo = None
+        # Para remover ao enviar vazio, use: else: robo.arquivo_robo = None
 
     db.commit()
     db.refresh(robo)
 
     cache_service.clear_pattern("robos:*")
     return _to_schema(robo)
+
+# ---------- GET: Download do arquivo ----------
+@router.get("/download/{id}", summary="Download arquivo do Robô")
+def download_arquivo_robo(
+    id: int = Path(..., gt=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    robo = db.query(Robo).filter(Robo.id == id).first()
+    if not robo:
+        raise HTTPException(status_code=404, detail="Robô não encontrado")
+
+    if not robo.arquivo_robo:
+        raise HTTPException(status_code=404, detail="Robô não tem arquivo")
+
+    # cria um nome de arquivo seguro a partir do nome do robô
+    def _slugify(s: str) -> str:
+        s = normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+        s = re.sub(r"[^\w\s.-]", "", s).strip().lower()
+        s = re.sub(r"\s+", "_", s)
+        return s or f"robo_{id}"
+
+    filename = f"{_slugify(robo.nome)}.zip"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=robo.arquivo_robo, media_type="application/zip", headers=headers)
 
 # ---------- DELETE ----------
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT, summary="Excluir Robô")
