@@ -2,7 +2,7 @@
 from typing import List, Optional
 from fastapi import (
     APIRouter, Depends, HTTPException, status, Path, Response,
-    UploadFile, File, Form, Body, Request
+    UploadFile, File, Form
 )
 from sqlalchemy.orm import Session
 
@@ -71,13 +71,9 @@ def obter_robo(
 async def criar_robo_multipart(
     nome: str = Form(..., description="Nome do robô"),
     id_ativo: Optional[str] = Form(None, description="ID do ativo (opcional)"),
-
-    # >>> APENAS lista de chaves repetidas: performance=a&performance=b
     performance: Optional[List[str]] = Form(
         None, description="Repita a chave: performance=a&performance=b"
     ),
-
-    # >>> APENAS 'arquivo_robo'
     arquivo_robo: Optional[UploadFile] = File(
         None, description="Arquivo do robô (opcional, salvo como bytea)"
     ),
@@ -86,14 +82,12 @@ async def criar_robo_multipart(
 ):
     id_ativo_int = _clean_optional_int(id_ativo)
 
-    # Normaliza performance (remove vazios)
     perf_list: Optional[List[str]] = None
     if performance is not None:
         perf_list = [p for p in performance if isinstance(p, str) and p.strip() != ""]
         if not perf_list:
             perf_list = None
 
-    # Arquivo
     content: Optional[bytes] = None
     if arquivo_robo is not None:
         content = await arquivo_robo.read()
@@ -138,11 +132,23 @@ def criar_robo_json(
     cache_service.clear_pattern("robos:*")
     return _to_schema(novo)
 
-# ---------- PUT: Atualizar robô (aceita JSON ou MULTIPART) ----------
-@router.put("/{id}", response_model=RoboSchema, summary="Atualizar Robô")
-async def atualizar_robo(
-    request: Request,
+# ---------- PUT: Atualizar robô (MULTIPART, igual ao POST) ----------
+@router.put(
+    "/{id}",
+    response_model=RoboSchema,
+    summary="Atualizar Robô (multipart/form-data, igual ao POST)",
+)
+async def atualizar_robo_multipart(
     id: int = Path(..., gt=0),
+    nome: Optional[str] = Form(None, description="Novo nome (opcional)"),
+    id_ativo: Optional[str] = Form(None, description="Novo id_ativo (opcional)"),
+    performance: Optional[List[str]] = Form(
+        None,
+        description="Repita a chave: performance=a&performance=b (opcional)"
+    ),
+    arquivo_robo: Optional[UploadFile] = File(
+        None, description="Novo arquivo do robô (opcional)"
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -150,72 +156,28 @@ async def atualizar_robo(
     if not robo:
         raise HTTPException(status_code=404, detail="Robô não encontrado")
 
-    ctype = request.headers.get("content-type", "").lower()
+    # nome — só atualiza se veio (e não vazio)
+    if nome is not None:
+        nome = nome.strip()
+        if nome:
+            robo.nome = nome
 
-    # -------- multipart (FormData) --------
-    if "multipart/form-data" in ctype:
-        form = await request.form()
+    # id_ativo — só atualiza se veio a chave (permite limpar com vazio/null)
+    if id_ativo is not None:
+        robo.id_ativo = _clean_optional_int(id_ativo)
 
-        # nome — só atualiza se veio e não é vazio
-        if "nome" in form:
-            nome = (form.get("nome") or "").strip()
-            if nome:
-                robo.nome = nome
-            # se quiser permitir "limpar" o nome, troque para: else: robo.nome = None
+    # performance — só atualiza se a chave veio
+    if performance is not None:
+        lista = [p.strip() for p in performance if isinstance(p, str) and p.strip() != ""]
+        robo.performance = lista if lista else None
 
-        # id_ativo — só atualiza se veio no form (permite limpar com vazio)
-        if "id_ativo" in form:
-            robo.id_ativo = _clean_optional_int(str(form.get("id_ativo")))
-
-        # performance — só atualiza se a CHAVE existir no form
-        if "performance" in form:
-            perf_vals = form.getlist("performance")  # performance=a&performance=b
-            lista = [str(x).strip() for x in perf_vals if str(x).strip() != ""]
-            robo.performance = lista if lista else None
-
-        # arquivo_robo — só atualiza se veio no form (substitui apenas se arquivo enviado)
-        if "arquivo_robo" in form:
-            up = form.get("arquivo_robo")
-            if isinstance(up, UploadFile):
-                content = await up.read()
-                if content and content != b"":
-                    robo.arquivo_robo = content
-                # se quiser permitir remover o arquivo enviando vazio, mude para:
-                # else:
-                #     robo.arquivo_robo = None
-
-    # -------- JSON (legado) --------
-    else:
-        try:
-            payload = await request.json()
-        except Exception:
-            raise HTTPException(status_code=422, detail="Corpo inválido")
-
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=422, detail="Corpo inválido")
-
-        # nome — só se enviado
-        if "nome" in payload:
-            val = (payload["nome"] or "").strip()
-            if val:
-                robo.nome = val
-
-        # id_ativo — só se enviado
-        if "id_ativo" in payload:
-            val = payload["id_ativo"]
-            robo.id_ativo = _clean_optional_int(str(val)) if val is not None else None
-
-        # performance — só se enviado
-        if "performance" in payload:
-            p = payload["performance"]
-            if p is None:
-                robo.performance = None
-            elif isinstance(p, list) and all(isinstance(x, str) for x in p):
-                robo.performance = [s for s in p if s.strip() != ""] or None
-            elif isinstance(p, str):
-                robo.performance = [p] if p.strip() else None
-            else:
-                raise HTTPException(status_code=400, detail='Formato inválido para "performance".')
+    # arquivo — substitui somente se enviado
+    if arquivo_robo is not None:
+        content = await arquivo_robo.read()
+        if content and content != b"":
+            robo.arquivo_robo = content
+        # Se quiser permitir remover arquivo ao enviar vazio, troque o else por:
+        # else: robo.arquivo_robo = None
 
     db.commit()
     db.refresh(robo)
