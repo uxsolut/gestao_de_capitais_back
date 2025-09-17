@@ -1,19 +1,19 @@
 # schemas/analises.py
+from typing import Optional
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 
-# ---------- entrada do POST ----------
+# entrada do POST (tudo opcional, exceto voto)
 class AnaliseCreate(BaseModel):
-    telefone: str = Field(..., min_length=3)       # tira espaços e valida tamanho no app se quiser
-    voto: int = Field(..., ge=1, le=10)            # 1 a 10
+    id_user: Optional[int] = Field(default=None, gt=0)
+    telefone: Optional[str] = Field(default=None, min_length=3)
+    voto: int = Field(..., ge=1, le=10)
 
-# ---------- saída (response) ----------
 class Analise(BaseModel):
     id: int
-    id_user: int
-    telefone: str
+    id_user: Optional[int] = None
+    telefone: Optional[str] = None
     voto: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
-    # pydantic v2: substitui "class Config: orm_mode = True"
     model_config = ConfigDict(from_attributes=True)

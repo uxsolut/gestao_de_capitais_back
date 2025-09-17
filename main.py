@@ -48,6 +48,7 @@ from routers import (
 from routers import paginas_dinamicas  # <<< ADICIONADO (router das páginas dinâmicas)
 from routers import tipo_de_ordem as r_tipo_de_ordem  # <<< ADICIONADO (router tipo_de_ordem)
 from routers import ativos as r_ativos
+from routers import analises as r_analises
 # NÃO importe processamento / consumo_processamento aqui em cima
 # (eles serão importados localmente dentro dos blocos de modo)
 
@@ -153,6 +154,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
+        app.include_router(r_analises.router, tags=["Análises"])
 
     elif mode == "all":
         # Tudo (legado)
@@ -170,6 +172,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])  # <<< ADICIONADO
         app.include_router(r_ativos.router, tags=["Ativos"])
+        app.include_router(r_analises.router, tags=["Análises"])
 
         from routers import processamento, consumo_processamento  # import local
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
