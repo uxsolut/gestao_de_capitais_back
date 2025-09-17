@@ -21,8 +21,6 @@ from database import engine, Base
 from middleware.error_handler import ErrorHandlerMiddleware
 
 # --- Carrega models para garantir os mapeamentos/tabelas ---
-from models import analises as m_analises
-from models import users as m_users
 from models import corretoras  # noqa: F401
 from models import robos as m_robos  # noqa: F401
 from models import requisicoes as m_requisicao  # noqa: F401
@@ -47,7 +45,6 @@ from routers import (
     health,
 
 )
-from routers import analises as r_analises
 from routers import paginas_dinamicas  # <<< ADICIONADO (router das páginas dinâmicas)
 from routers import tipo_de_ordem as r_tipo_de_ordem  # <<< ADICIONADO (router tipo_de_ordem)
 from routers import ativos as r_ativos
@@ -156,7 +153,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
-        app.include_router(r_analises.router, tags=["Análises"])
 
     elif mode == "all":
         # Tudo (legado)
@@ -174,7 +170,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])  # <<< ADICIONADO
         app.include_router(r_ativos.router, tags=["Ativos"])
-        app.include_router(r_analises.router, tags=["Análises"])
 
         from routers import processamento, consumo_processamento  # import local
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
