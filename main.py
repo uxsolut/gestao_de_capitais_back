@@ -21,13 +21,14 @@ from database import engine, Base
 from middleware.error_handler import ErrorHandlerMiddleware
 
 # --- Carrega models para garantir os mapeamentos/tabelas ---
+from models import analises as m_analises
 from models import corretoras  # noqa: F401
 from models import robos as m_robos  # noqa: F401
 from models import requisicoes as m_requisicao  # noqa: F401
 from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401
 from models import ordens as m_ordens  # noqa: F401
 from models import paginas_dinamicas as m_paginas_dinamicas  # <<< ADICIONADO (garante o mapeamento)
-from models import analises as m_analises
+
 
 # --- Routers "públicos" de app (EXCETO processamento/consumo) ---
 from routers import (
