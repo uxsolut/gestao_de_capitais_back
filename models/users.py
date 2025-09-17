@@ -38,7 +38,7 @@ class User(Base):
     logs = relationship("Log", back_populates="usuario", cascade="all, delete-orphan")
     relatorios = relationship("Relatorio", back_populates="user")
     versoes_aplicacao = relationship("VersaoAplicacao", back_populates="user")
-    analises = relationship("Analise", back_populates="user", cascade="all, delete-orphan", passive_deletes=True,)
+    analises = relationship("Analise", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', tipo='{self.tipo_de_user}')>"
