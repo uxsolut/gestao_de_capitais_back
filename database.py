@@ -10,14 +10,21 @@ from dotenv import load_dotenv
 # ==========================
 # Parte SQLAlchemy (ORM)
 # ==========================
-from sqlalchemy import create_engine, text  # text incluído como no seu original
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_engine(DATABASE_URL)
+# --- Garante search_path em toda conexão (inclusive atrás de PgBouncer) ---
+SEARCH_PATH = "gestor_capitais,global,tetra_music,public"
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    connect_args={"options": f"-c search_path={SEARCH_PATH}"},
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -33,7 +40,7 @@ def get_db():
 # =======================================
 # Parte PostgreSQL + Redis + Repository
 # =======================================
-import psycopg2  # noqa: F401 (mantido como no seu código)
+import psycopg2  # noqa: F401
 import redis
 import structlog
 from psycopg2.extras import RealDictCursor
@@ -54,6 +61,7 @@ class DatabaseManager:
         """Inicializa as conexões com PostgreSQL e Redis"""
         try:
             # Pool de conexões PostgreSQL
+            # Passa 'options' para fixar o search_path também no pool psycopg2
             self.postgres_pool = ThreadedConnectionPool(
                 minconn=1,
                 maxconn=20,
@@ -63,9 +71,10 @@ class DatabaseManager:
                 user=settings.postgres_user,
                 password=settings.postgres_password,
                 cursor_factory=RealDictCursor,
+                options=f"-c search_path={SEARCH_PATH}",
             )
 
-            # Cliente Redis (um DB único; este repo usa para a fila por conta)
+            # Cliente Redis
             self.redis_client = redis.Redis(
                 host=settings.redis_host,
                 port=settings.redis_port,
@@ -88,6 +97,9 @@ class DatabaseManager:
         """Testa as conexões com os bancos"""
         with self.get_postgres_connection() as conn:
             with conn.cursor() as cursor:
+                cursor.execute("SHOW search_path;")
+                sp = cursor.fetchone()
+                logger.info("search_path_ativo", search_path=str(sp))
                 cursor.execute("SELECT 1")
         self.redis_client.ping()
 
@@ -140,8 +152,8 @@ class ProcessamentoRepository:
         with self.db.get_postgres_connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO requisicoes (id_robo, symbol, id_tipo_ordem, tipo)
-                VALUES (%(id_robo)s, %(symbol)s, %(id_tipo_ordem)s, %(tipo)s::tipo_de_acao)
+                INSERT INTO gestor_capitais.requisicoes (id_robo, symbol, id_tipo_ordem, tipo)
+                VALUES (%(id_robo)s, %(symbol)s, %(id_tipo_ordem)s, %(tipo)s::gestor_capitais.tipo_de_acao)
                 RETURNING id
                 """,
                 {
@@ -161,13 +173,13 @@ class ProcessamentoRepository:
             cursor.execute(
                 """
                 SELECT
-                    rdu.id      AS id_robo_user,
-                    rdu.id_user AS id_user,
-                    rdu.id_robo AS id_robo,
+                    rdu.id       AS id_robo_user,
+                    rdu.id_user  AS id_user,
+                    rdu.id_robo  AS id_robo,
                     rdu.id_conta AS id_conta,
-                    c.nome      AS nome_conta
-                FROM robos_do_user rdu
-                JOIN contas c ON rdu.id_conta = c.id
+                    c.nome       AS nome_conta
+                FROM gestor_capitais.robos_do_user rdu
+                JOIN gestor_capitais.contas c ON rdu.id_conta = c.id
                 WHERE rdu.id_robo = %s
                   AND rdu.ligado = TRUE
                 """,
@@ -177,22 +189,25 @@ class ProcessamentoRepository:
 
     def _criar_ordem_pg(self, conta: Dict[str, Any], requisicao_id: int, dados_requisicao: Dict[str, Any]) -> int:
         """
-        Cria uma ordem ligada ao robô do usuário (id_robo_user). Não grava id_conta na tabela ordens
-        porque essa coluna não existe; a associação com a conta é via robos_do_user.id_conta.
+        Cria uma ordem ligada ao robô do usuário (id_robo_user).
         """
         with self.db.get_postgres_connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO ordens (
+                INSERT INTO gestor_capitais.ordens (
                     id_robo_user, id_user, numero_unico, status, id_tipo_ordem, tipo
                 )
-                VALUES (%s, %s, %s, %s::ordem_status, %s, %s::tipo_de_acao)
+                VALUES (
+                    %s, %s, %s,
+                    %s::gestor_capitais.ordem_status,
+                    %s,
+                    %s::gestor_capitais.tipo_de_acao
+                )
                 RETURNING id
                 """,
                 (
                     conta["id_robo_user"],
                     conta["id_user"],
-                # numero_unico só como string (pode incluir o id_conta para facilitar leitura se quiser)
                     f"REQ-{requisicao_id}-conta-{conta['id_conta']}",
                     "Inicializado",
                     dados_requisicao.get("id_tipo_ordem"),
@@ -211,22 +226,19 @@ class ProcessamentoRepository:
 
     def atualizar_chave_token_conta_por_id(self, id_conta: int, chave: Optional[str]) -> bool:
         """
-        Atualiza/persiste a chave_do_token na tabela public.contas (por ID).
-        Aceita 'tok:...' ou o token cru; sempre salva com namespace.
-        Faz RETURNING para confirmar o que ficou salvo e loga.
+        Atualiza/persiste a chave_do_token na tabela contas (por ID).
         """
         try:
-            # normaliza a chave (sempre com namespace)
             ns = (getattr(settings, "OPAQUE_TOKEN_NAMESPACE", "") or "tok").strip()
             if chave:
                 chave_final = chave if ":" in chave else f"{ns}:{chave}"
             else:
-                chave_final = None  # permite limpar se necessário
+                chave_final = None
 
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
                     """
-                    UPDATE public.contas
+                    UPDATE gestor_capitais.contas
                        SET chave_do_token = %s,
                            updated_at     = now()
                      WHERE id = %s
@@ -322,7 +334,7 @@ class ProcessamentoRepository:
             with self.db.get_postgres_connection() as conn, conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    INSERT INTO logs (
+                    INSERT INTO gestor_capitais.logs (
                         tipo, conteudo, id_usuario, id_aplicacao, id_robo_user, id_robo, id_conta
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -341,14 +353,14 @@ class ProcessamentoRepository:
             logger.debug("Log registrado", tipo=tipo, usuario=id_usuario)
         except Exception as e:
             logger.error("Erro ao registrar log", error=str(e))
-    
+
     def limpar_chave_token_por_id(self, conta_id: int):
         """Zera a coluna chave_do_token da TABELA CONTAS."""
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
                     """
-                    UPDATE public.contas
+                    UPDATE gestor_capitais.contas
                        SET chave_do_token = NULL,
                            updated_at = now()
                      WHERE id = %s
@@ -367,7 +379,7 @@ class ProcessamentoRepository:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
                     """
-                    UPDATE public.contas
+                    UPDATE gestor_capitais.contas
                        SET chave_do_token = %s,
                            updated_at = now()
                      WHERE id = %s
@@ -381,21 +393,21 @@ class ProcessamentoRepository:
                 "atualizar_chave_token_por_id_erro", id=conta_id, error=str(e)
             )
             return False
-    
+
     def excluir_ordem_por_id(self, ordem_id: int) -> bool:
         with self.db.get_postgres_connection() as conn, conn.cursor() as c:
-            c.execute("DELETE FROM public.ordens WHERE id = %s", (ordem_id,))
+            c.execute("DELETE FROM gestor_capitais.ordens WHERE id = %s", (ordem_id,))
             conn.commit()
             return c.rowcount > 0
-        
+
     def buscar_chave_token_ativa_por_id(self, id_conta: int) -> Optional[str]:
         """
-        Retorna a chave_do_token salva em public.contas para a conta (por ID).
+        Retorna a chave_do_token salva em contas para a conta (por ID).
         """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
-                    "SELECT chave_do_token FROM public.contas WHERE id = %s LIMIT 1",
+                    "SELECT chave_do_token FROM gestor_capitais.contas WHERE id = %s LIMIT 1",
                     (id_conta,),
                 )
                 row = c.fetchone()
@@ -403,26 +415,25 @@ class ProcessamentoRepository:
         except Exception as e:
             logger.error("buscar_chave_token_ativa_por_id_erro", id_conta=id_conta, error=str(e))
             return None
-        
+
     def listar_contas_com_inicializado(self, limit: int = 2000):
         """
         CONTAS que possuem AO MENOS uma ORDEM em 'Inicializado'.
         Join: ordens.id_robo_user -> robos_do_user.id -> robos_do_user.id_conta -> contas.id
-        Retorna: [{"id": <conta_id>, "chave_do_token": <str|None>}]
         """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
                     """
                     SELECT c.id AS id, c.chave_do_token
-                      FROM public.contas c
+                      FROM gestor_capitais.contas c
                      WHERE EXISTS (
                             SELECT 1
-                              FROM public.ordens o
-                              JOIN public.robos_do_user rdu
+                              FROM gestor_capitais.ordens o
+                              JOIN gestor_capitais.robos_do_user rdu
                                 ON rdu.id = o.id_robo_user
                              WHERE rdu.id_conta = c.id
-                               AND o.status = 'Inicializado'::ordem_status
+                               AND o.status = 'Inicializado'::gestor_capitais.ordem_status
                            )
                   ORDER BY c.id DESC
                      LIMIT %s
@@ -433,26 +444,25 @@ class ProcessamentoRepository:
         except Exception as e:
             logger.error("listar_contas_com_inicializado_erro", error=str(e))
             return []
+
     def listar_contas_sem_inicializado_com_token(self, limit: int = 1000):
         """
         CONTAS que têm chave_do_token, mas NÃO possuem NENHUMA ordem em 'Inicializado'.
-        Aqui podemos apagar a chave no Redis e zerar no banco.
-        Retorna: [{"id": <conta_id>, "chave_do_token": <str>}]
         """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as c:
                 c.execute(
                     """
                     SELECT c.id AS id, c.chave_do_token
-                      FROM public.contas c
+                      FROM gestor_capitais.contas c
                      WHERE c.chave_do_token IS NOT NULL
                        AND NOT EXISTS (
                             SELECT 1
-                              FROM public.ordens o
-                              JOIN public.robos_do_user rdu
+                              FROM gestor_capitais.ordens o
+                              JOIN gestor_capitais.robos_do_user rdu
                                 ON rdu.id = o.id_robo_user
                              WHERE rdu.id_conta = c.id
-                               AND o.status = 'Inicializado'::ordem_status
+                               AND o.status = 'Inicializado'::gestor_capitais.ordem_status
                            )
                   ORDER BY c.id DESC
                      LIMIT %s
