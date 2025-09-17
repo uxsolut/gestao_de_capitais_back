@@ -11,4 +11,3 @@ from models.relatorios import Relatorio
 from models.logs import Log
 from models.versao_aplicacao import VersaoAplicacao
 from models.tipo_de_aplicacao import TipoDeAplicacao
-from models.analises import Analise
