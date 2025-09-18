@@ -6,8 +6,7 @@ from services.deploy_pages_service import GitHubPagesDeployer
 from sqlalchemy import text
 from database import engine
 
-# >>> ADD: GitHub dispatch
-import requests
+# >>> ADD: GitHub dispatch (apenas BaseModel para o body do DELETE)
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/paginas-dinamicas", tags=["Páginas Dinâmicas"])
@@ -85,29 +84,8 @@ async def criar_pagina_dinamica(
     }
 
 # =====================================================================
-# DELETE /delete  (NOVO)  -> dispara Actions e apaga do banco (enum cast)
+# DELETE /delete  -> dispara Actions (usando MESMA classe) e apaga do banco
 # =====================================================================
-
-# Env p/ chamar o GitHub Actions (repository_dispatch)
-GH_OWNER = os.getenv("GH_OWNER")          # ex.: "uxsolut"
-GH_REPO  = os.getenv("GH_REPO")           # ex.: "pages-ops"
-GH_TOKEN = os.getenv("GH_TOKEN_REPO")     # PAT com permissão de Repository dispatch / Actions: write
-GH_DELETE_EVENT = os.getenv("GH_DELETE_EVENT", "delete-landing")
-
-def _gh_headers():
-    if not (GH_OWNER and GH_REPO and GH_TOKEN):
-        raise HTTPException(status_code=500, detail="GH_OWNER/GH_REPO/GH_TOKEN_REPO não configurados")
-    return {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {GH_TOKEN}",
-    }
-
-def _dispatch_delete_to_github(domain: str, slug: str):
-    url = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/dispatches"
-    payload = {"event_type": GH_DELETE_EVENT, "client_payload": {"domain": domain, "slug": slug}}
-    r = requests.post(url, headers=_gh_headers(), json=payload, timeout=20)
-    if r.status_code != 204:
-        raise HTTPException(status_code=502, detail=f"Falha no GitHub: {r.status_code} {r.text}")
 
 class DeleteBody(BaseModel):
     dominio: str
@@ -128,10 +106,13 @@ def paginas_dinamicas_delete(body: DeleteBody):
     if not re.fullmatch(r"[a-z0-9.-]+", dominio):
         raise HTTPException(status_code=400, detail="Domínio inválido.")
 
-    # 1) dispara GitHub Actions p/ apagar /var/www/pages/<dominio>/<slug>
-    _dispatch_delete_to_github(dominio, slug)
+    # 1) Disparar o workflow de delete usando a MESMA classe/config do deploy
+    try:
+        GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Falha ao disparar delete no GitHub: {e}")
 
-    # 2) apaga do banco (CAST para dominio_enum)
+    # 2) Apagar do banco (CAST para dominio_enum)
     try:
         with engine.begin() as conn:
             res = conn.execute(
@@ -144,12 +125,11 @@ def paginas_dinamicas_delete(body: DeleteBody):
             )
             apagado_no_banco = (res.rowcount or 0) > 0
     except Exception as e:
-        # Se quiser falhar quando não conseguir apagar no banco, mantenha 502
         raise HTTPException(status_code=502, detail=f"GitHub ok, mas erro ao excluir no banco: {e}")
 
     return {
         "ok": True,
-        "github_action": {"event_type": GH_DELETE_EVENT, "repo": f"{GH_OWNER}/{GH_REPO}"},
+        "github_action": {"workflow": "delete-landing"},
         "apagado_no_banco": apagado_no_banco,
         "dominio": dominio,
         "slug": slug,
