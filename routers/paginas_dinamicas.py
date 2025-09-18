@@ -43,7 +43,7 @@ def _dispatch_delete_to_github(domain: str, slug: str):
         raise HTTPException(status_code=502, detail=f"GitHub dispatch falhou: {r.status_code} {r.text}")
 
 # --------------------------------
-# POST /criar  (mantido do seu)
+# POST /criar  (seu endpoint)
 # --------------------------------
 @router.post("/criar", status_code=201)
 async def criar_pagina_dinamica(
@@ -72,7 +72,7 @@ async def criar_pagina_dinamica(
 
     zip_url = f"{BASE_UPLOADS_URL}/{fname}"
 
-    # 3) SALVAR NO BANCO (best-effort)
+    # 3) SALVAR NO BANCO (best-effort) — já com CAST para dominio_enum
     url_full = f"https://{dominio}/p/{slug}/"
     db_saved = False
     try:
@@ -115,7 +115,7 @@ async def criar_pagina_dinamica(
 # DELETE /delete  (novo)
 # --------------------------------
 
-# Pydantic v2: use Annotated + StringConstraints para evitar erro do Pylance
+# Pydantic v2: Annotated + StringConstraints
 Domain = Annotated[str, StringConstraints(pattern=r"^[a-z0-9.-]+$")]
 SlugT  = Annotated[str, StringConstraints(pattern=r"^[a-z0-9-]{1,64}$")]
 
@@ -132,12 +132,17 @@ def paginas_dinamicas_delete(body: DeleteBody):
     dominio = body.dominio
     slug = body.slug
 
-    # 1) (opcional) checar existência para feedback
+    # 1) (opcional) checar existência — com CAST para dominio_enum
     row = None
     try:
         with engine.begin() as conn:
             row = conn.execute(
-                text("SELECT id FROM global.paginas_dinamicas WHERE dominio = :d AND slug = :s"),
+                text("""
+                    SELECT id
+                    FROM global.paginas_dinamicas
+                    WHERE dominio = CAST(:d AS dominio_enum)
+                      AND slug    = :s
+                """),
                 {"d": dominio, "s": slug},
             ).first()
     except Exception as e:
@@ -148,11 +153,15 @@ def paginas_dinamicas_delete(body: DeleteBody):
     # 2) dispara o workflow de delete (apaga /var/www/pages/<dominio>/<slug>)
     _dispatch_delete_to_github(dominio, slug)
 
-    # 3) remove do banco
+    # 3) remove do banco — com CAST para dominio_enum
     try:
         with engine.begin() as conn:
             res = conn.execute(
-                text("DELETE FROM global.paginas_dinamicas WHERE dominio = :d AND slug = :s"),
+                text("""
+                    DELETE FROM global.paginas_dinamicas
+                    WHERE dominio = CAST(:d AS dominio_enum)
+                      AND slug    = :s
+                """),
                 {"d": dominio, "s": slug},
             )
             apagado_no_banco = (res.rowcount or 0) > 0
