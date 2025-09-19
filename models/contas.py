@@ -6,7 +6,7 @@ from database import Base
 
 class Conta(Base):
     __tablename__ = "contas"
-    __table_args__ = {"schema": "gestor_capitais"}  # <<< MESMO SCHEMA DO robos_do_user
+    __table_args__ = {"schema": "gestor_capitais"}  # mesmo schema do robos_do_user
 
     id = Column(Integer, primary_key=True, index=True)
 
@@ -29,17 +29,20 @@ class Conta(Base):
     carteira = relationship(
         "Carteira",
         back_populates="contas",
+        primaryjoin="foreign(Conta.id_carteira) == Carteira.id",
         foreign_keys=[id_carteira],
         passive_deletes=True,
     )
+
     corretora = relationship(
         "Corretora",
         back_populates="contas",
+        primaryjoin="foreign(Conta.id_corretora) == Corretora.id",
         foreign_keys=[id_corretora],
         passive_deletes=True,
     )
 
-    # FK existe: gestor_capitais.robos_do_user.id_conta -> gestor_capitais.contas.id
+    # gestor_capitais.robos_do_user.id_conta -> gestor_capitais.contas.id
     robos_do_user = relationship(
         "RoboDoUser",
         back_populates="conta",
@@ -48,7 +51,7 @@ class Conta(Base):
         passive_deletes=True,
     )
 
-    # logs.id_conta -> contas.id (ambos em gestor_capitais)
+    # logs.id_conta -> contas.id
     logs = relationship(
         "Log",
         back_populates="conta",
@@ -60,7 +63,7 @@ class Conta(Base):
     def __repr__(self):
         return f"<Conta id={self.id} nome={self.nome!r} conta_meta_trader={self.conta_meta_trader!r}>"
 
-# índice parcial (opcional; só mantenha se você realmente cria via SQL também)
+# índice parcial (opcional; já existe no banco)
 Index(
     "contas_chave_do_token_uidx",
     Conta.chave_do_token,
