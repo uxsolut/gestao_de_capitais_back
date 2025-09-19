@@ -157,40 +157,54 @@ async def criar_pagina_dinamica(
     }
 
 
-# ======================= DELETE =======================
+# ======================= DELETE (por id) =======================
 
 class DeleteBody(BaseModel):
-    dominio: str
-    slug: str
+    id: int  # deletar por ID, simples
 
 @router.delete(
     "/delete",
-    summary="paginas_dinamicas delete",
-    description="Dispara exclusão no GitHub Actions e remove o registro na tabela paginas_dinamicas."
+    summary="paginas_dinamicas delete (por id)",
+    description="Remove o deploy (se estiver no ar) e apaga o registro pelo id.",
 )
 def paginas_dinamicas_delete(body: DeleteBody):
-    dominio = body.dominio
-    slug = body.slug
+    # 1) Buscar o registro pelo id
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT id,
+                       dominio::text AS dominio,
+                       slug,
+                       estado::text AS estado
+                FROM global.paginas_dinamicas
+                WHERE id = :id
+                LIMIT 1
+            """),
+            {"id": body.id},
+        ).mappings().first()
 
-    if not re.fullmatch(r"[a-z0-9-]{1,64}", slug):
-        raise HTTPException(status_code=400, detail="Slug inválido. Use [a-z0-9-]{1,64}.")
-    if dominio not in DOMINIO_ENUM:
-        raise HTTPException(status_code=400, detail="Domínio inválido.")
+    if not row:
+        raise HTTPException(status_code=404, detail="Registro não encontrado.")
 
+    dominio = row["dominio"]
+    slug = row["slug"]
+    estado = row["estado"]  # pode ser None
+
+    # 2) Se estava publicado (producao/beta/dev), remover do GitHub no caminho correto
+    slug_path: Optional[str] = None
     try:
-        GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug)
+        slug_path = _deploy_slug(slug, estado)  # 'slug' | 'beta/slug' | 'dev/slug' | None
+        if slug_path:
+            GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_path)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Falha ao disparar delete no GitHub: {e}")
 
+    # 3) Apagar do banco pelo id
     try:
         with engine.begin() as conn:
             res = conn.execute(
-                text("""
-                    DELETE FROM global.paginas_dinamicas
-                    WHERE dominio = CAST(:d AS global.dominio_enum)
-                      AND slug    = :s
-                """),
-                {"d": dominio, "s": slug},
+                text("DELETE FROM global.paginas_dinamicas WHERE id = :id"),
+                {"id": body.id},
             )
             apagado_no_banco = (res.rowcount or 0) > 0
     except Exception as e:
@@ -198,10 +212,12 @@ def paginas_dinamicas_delete(body: DeleteBody):
 
     return {
         "ok": True,
-        "github_action": {"workflow": "delete-landing"},
-        "apagado_no_banco": apagado_no_banco,
+        "id": body.id,
         "dominio": dominio,
         "slug": slug,
+        "estado": estado,
+        "github_action": {"workflow": "delete-landing", "slug_removed": slug_path},
+        "apagado_no_banco": apagado_no_banco,
     }
 
 
