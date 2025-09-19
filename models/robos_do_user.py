@@ -8,7 +8,7 @@ class RoboDoUser(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    id_user     = Column(Integer, ForeignKey("global.users.id", ondelete="CASCADE"),  nullable=False)  # <-- AQUI
+    id_user     = Column(Integer, ForeignKey("global.users.id", ondelete="CASCADE"),  nullable=False)
     id_robo     = Column(Integer, ForeignKey("gestor_capitais.robos.id", ondelete="CASCADE"),  nullable=False)
     id_carteira = Column(Integer, ForeignKey("gestor_capitais.carteiras.id", ondelete="SET NULL"), nullable=True)
     id_conta    = Column(Integer, ForeignKey("gestor_capitais.contas.id",  ondelete="SET NULL"), nullable=True)

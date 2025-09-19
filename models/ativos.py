@@ -12,11 +12,17 @@ class PaisEnum(str, enum.Enum):
     Estados_Unidos = "Estados Unidos"
     Todos = "Todos"
 
-pais_enum_pg = PGEnum(PaisEnum, name="pais_enum", create_type=False)
+# >>> enum existente no schema gestor_capitais
+pais_enum_pg = PGEnum(
+    PaisEnum,
+    name="pais_enum",
+    schema="gestor_capitais",   # <<< schema correto
+    create_type=False,
+)
 
 class Ativo(Base):
     __tablename__ = "ativos"
-    __table_args__ = {"schema": "gestor_capitais"}  # <<< IMPORTANTE
+    __table_args__ = {"schema": "gestor_capitais"}
 
     id = Column(Integer, primary_key=True, index=True)
     descricao = Column(Text, nullable=False)
@@ -24,7 +30,6 @@ class Ativo(Base):
     pais = Column(pais_enum_pg, nullable=False)
     criado_em = Column(DateTime, server_default=func.now(), nullable=False)
 
-    # lado 1-N com Robo
     robos = relationship("Robo", back_populates="ativo", lazy="selectin")
 
     def __repr__(self):

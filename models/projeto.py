@@ -5,19 +5,19 @@ from database import Base
 
 class Projeto(Base):
     __tablename__ = "projetos"
-    __table_args__ = {"schema": "global"}
+    __table_args__ = {"schema": "global"}  # tabela está em global.projetos
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     nome = Column(String(255), nullable=False)
 
-    # só atualizado_em permanece
     atualizado_em = Column(
         DateTime(timezone=False),
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
-        server_onupdate=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
     )
 
+    # FK para global.paginas_dinamicas.id
     id_pagina_em_uso = Column(
         Integer,
         ForeignKey("global.paginas_dinamicas.id", onupdate="CASCADE", ondelete="SET NULL"),
@@ -27,7 +27,7 @@ class Projeto(Base):
 
     pagina_em_uso = relationship(
         "PaginaDinamica",
-        primaryjoin="foreign(Projeto.id_pagina_em_uso)==PaginaDinamica.id",
+        primaryjoin="foreign(Projeto.id_pagina_em_uso) == PaginaDinamica.id",
         lazy="joined",
         viewonly=True,
     )

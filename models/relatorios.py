@@ -20,7 +20,7 @@ class Relatorio(Base):
 
     resultado_do_dia = Column(Float, nullable=False)
 
-    # users está no schema GLOBAL (conforme seu \dt)
+    # users está no schema GLOBAL
     id_user = Column(Integer, ForeignKey("global.users.id"), nullable=False)
 
     data_relatorio = Column(Date, server_default=func.current_date())
@@ -30,14 +30,13 @@ class Relatorio(Base):
     data_cotacao     = Column(Date, nullable=True)
 
     # Tabelas no MESMO schema gestor_capitais
-    id_robo = Column(Integer, ForeignKey("gestor_capitais.robos.id"),  nullable=True)
+    id_robo  = Column(Integer, ForeignKey("gestor_capitais.robos.id"),  nullable=True)
     id_ativo = Column(Integer, ForeignKey("gestor_capitais.ativos.id"), nullable=True)
 
     # enum existente
     tipo_mercado = Column(tipo_mercado_enum, nullable=True)
 
     # ---------------- RELACIONAMENTOS ----------------
-    # Bate com Robo.relatorios (já definido no seu model Robo)
     robo = relationship(
         "Robo",
         back_populates="relatorios",
@@ -45,7 +44,6 @@ class Relatorio(Base):
         foreign_keys=[id_robo],
     )
 
-    # Bate com User.relatorios (no model users, schema global)
     user = relationship(
         "User",
         back_populates="relatorios",
@@ -53,7 +51,7 @@ class Relatorio(Base):
         foreign_keys=[id_user],
     )
 
-    # Ativo não tem back_populates no seu model — mantenha simples
+    # Ativo sem back_populates: relacionamento simples
     ativo = relationship(
         "Ativo",
         primaryjoin="Relatorio.id_ativo == foreign(Ativo.id)",
@@ -63,6 +61,6 @@ class Relatorio(Base):
     def __repr__(self):
         return f"<Relatorio id={self.id} resultado_do_dia={self.resultado_do_dia} data_relatorio={self.data_relatorio}>"
 
-# Índices úteis (iguais aos que você já tinha/quer)
+# Índices
 Index("ix_relatorios_user_data", Relatorio.id_user, Relatorio.data_relatorio)
 Index("ix_relatorios_tipo_mercado_data", Relatorio.tipo_mercado, Relatorio.data_relatorio)

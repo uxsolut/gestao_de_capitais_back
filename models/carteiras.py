@@ -11,14 +11,13 @@ class Carteira(Base):
     nome = Column(Text, nullable=False)
     id_user = Column(
         Integer,
-        ForeignKey("gestor_capitais.users.id", ondelete="CASCADE"),
+        ForeignKey("global.users.id", ondelete="CASCADE"),  # <<< schema correto
         nullable=False,
     )
 
     # --------- RELACIONAMENTOS ---------
     user = relationship("User", back_populates="carteiras")
 
-    # lado inverso de Conta.carteira  (FK: contas.id_carteira -> carteiras.id, ON DELETE SET NULL)
     contas = relationship(
         "Conta",
         back_populates="carteira",
@@ -27,7 +26,6 @@ class Carteira(Base):
         passive_deletes=True,
     )
 
-    # lado inverso de RoboDoUser.carteira (FK: robos_do_user.id_carteira -> carteiras.id, ON DELETE SET NULL)
     robos_do_user = relationship(
         "RoboDoUser",
         back_populates="carteira",
