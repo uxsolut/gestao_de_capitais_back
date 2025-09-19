@@ -14,7 +14,7 @@ tipo_mercado_enum = PGEnum(
 
 class Relatorio(Base):
     __tablename__ = "relatorios"
-    __table_args__ = {"schema": "gestor_capitais"}  # <- schema correto
+    __table_args__ = {"schema": "gestor_capitais"}
 
     id = Column(Integer, primary_key=True, index=True)
 
@@ -29,7 +29,7 @@ class Relatorio(Base):
     preco_fechamento = Column(Numeric, nullable=True)
     data_cotacao     = Column(Date, nullable=True)
 
-    # Tabelas no MESMO schema gestor_capitais
+    # FKs no MESMO schema gestor_capitais
     id_robo  = Column(Integer, ForeignKey("gestor_capitais.robos.id"),  nullable=True)
     id_ativo = Column(Integer, ForeignKey("gestor_capitais.ativos.id"), nullable=True)
 
@@ -37,24 +37,24 @@ class Relatorio(Base):
     tipo_mercado = Column(tipo_mercado_enum, nullable=True)
 
     # ---------------- RELACIONAMENTOS ----------------
+    # 👉 foreign() deve marcar a FK da tabela filha (Relatorio.*)
     robo = relationship(
         "Robo",
         back_populates="relatorios",
-        primaryjoin="Relatorio.id_robo == foreign(Robo.id)",
+        primaryjoin="Robo.id == foreign(Relatorio.id_robo)",
         foreign_keys=[id_robo],
     )
 
     user = relationship(
         "User",
         back_populates="relatorios",
-        primaryjoin="Relatorio.id_user == foreign(User.id)",
+        primaryjoin="User.id == foreign(Relatorio.id_user)",
         foreign_keys=[id_user],
     )
 
-    # Ativo sem back_populates: relacionamento simples
     ativo = relationship(
         "Ativo",
-        primaryjoin="Relatorio.id_ativo == foreign(Ativo.id)",
+        primaryjoin="Ativo.id == foreign(Relatorio.id_ativo)",
         foreign_keys=[id_ativo],
     )
 
