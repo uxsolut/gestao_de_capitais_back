@@ -6,48 +6,61 @@ from database import Base
 
 class Conta(Base):
     __tablename__ = "contas"
+    __table_args__ = {"schema": "gestor_capitais"}  # <<< MESMO SCHEMA DO robos_do_user
 
     id = Column(Integer, primary_key=True, index=True)
-    # no print do \d não há unique em conta_meta_trader, então não marcamos unique=True
+
     conta_meta_trader = Column(String, nullable=True)
+    id_corretora      = Column(Integer, ForeignKey("gestor_capitais.corretoras.id", ondelete="SET NULL"), nullable=True)
+    id_carteira       = Column(Integer, ForeignKey("gestor_capitais.carteiras.id",  ondelete="SET NULL"), nullable=True)
 
-    id_corretora = Column(Integer, ForeignKey("corretoras.id", ondelete="SET NULL"), nullable=True)
-    id_carteira  = Column(Integer, ForeignKey("carteiras.id", ondelete="SET NULL"),  nullable=True)
-
-    # no schema não está NOT NULL -> deixamos nullable=True
-    nome = Column(Text, nullable=True)
-
+    nome              = Column(Text, nullable=True)
     margem_total      = Column(Numeric, nullable=True)
     margem_disponivel = Column(Numeric, nullable=True)
+    jwt_atual         = Column(Text, nullable=True)
 
-    jwt_atual  = Column(Text, nullable=True)
-
-    # default vem do banco: CURRENT_TIMESTAMP
-    updated_at = Column(DateTime(timezone=False),
-                        server_default=func.current_timestamp(),
-                        onupdate=func.current_timestamp(),
-                        nullable=True)
-
-    # NOVO: token agora pertence à conta
+    updated_at     = Column(DateTime(timezone=False),
+                            server_default=func.current_timestamp(),
+                            onupdate=func.current_timestamp(),
+                            nullable=True)
     chave_do_token = Column(Text, nullable=True)
 
-    # Relacionamentos
-    corretora     = relationship("Corretora", back_populates="contas")
-    carteira      = relationship("Carteira",  back_populates="contas")
-    robos_do_user = relationship("RoboDoUser", back_populates="conta")
+    # ---------------- RELACIONAMENTOS ----------------
+    carteira = relationship(
+        "Carteira",
+        back_populates="contas",
+        foreign_keys=[id_carteira],
+        passive_deletes=True,
+    )
+    corretora = relationship(
+        "Corretora",
+        back_populates="contas",
+        foreign_keys=[id_corretora],
+        passive_deletes=True,
+    )
 
+    # FK existe: gestor_capitais.robos_do_user.id_conta -> gestor_capitais.contas.id
+    robos_do_user = relationship(
+        "RoboDoUser",
+        back_populates="conta",
+        primaryjoin="Conta.id == foreign(RoboDoUser.id_conta)",
+        foreign_keys="RoboDoUser.id_conta",
+        passive_deletes=True,
+    )
+
+    # logs.id_conta -> contas.id (ambos em gestor_capitais)
     logs = relationship(
         "Log",
         back_populates="conta",
-        cascade="all, delete-orphan",
-        lazy="selectin",
+        primaryjoin="Conta.id == foreign(Log.id_conta)",
+        foreign_keys="Log.id_conta",
         passive_deletes=True,
     )
 
     def __repr__(self):
         return f"<Conta id={self.id} nome={self.nome!r} conta_meta_trader={self.conta_meta_trader!r}>"
 
-# Índice único parcial (opcional declarar aqui; já existe via SQL)
+# índice parcial (opcional; só mantenha se você realmente cria via SQL também)
 Index(
     "contas_chave_do_token_uidx",
     Conta.chave_do_token,
