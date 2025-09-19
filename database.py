@@ -325,25 +325,27 @@ class ProcessamentoRepository:
         tipo: str,
         conteudo: str,
         id_usuario: int,
-        id_aplicacao: int = 1,
         id_robo_user: Optional[int] = None,
         id_robo: Optional[int] = None,
         id_conta: Optional[int] = None,
     ):
+        """
+        Insere um log em gestor_capitais.logs.
+        OBS: campo id_aplicacao foi removido do schema.
+        """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as cursor:
                 cursor.execute(
                     """
                     INSERT INTO gestor_capitais.logs (
-                        tipo, conteudo, id_usuario, id_aplicacao, id_robo_user, id_robo, id_conta
+                        tipo, conteudo, id_usuario, id_robo_user, id_robo, id_conta
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     """,
                     (
                         tipo,
                         conteudo,
                         id_usuario,
-                        id_aplicacao,
                         id_robo_user,
                         id_robo,
                         id_conta,
