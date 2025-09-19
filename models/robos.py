@@ -30,8 +30,12 @@ class Robo(Base):
 
     # ----------------- RELACIONAMENTOS -----------------
 
-    # ativo (FK local -> ativos.id)
-    ativo = relationship("Ativo", foreign_keys=[id_ativo])
+    # ativo (FK local -> ativos.id) — pareado com Ativo.robos (back_populates)
+    ativo = relationship(
+        "Ativo",
+        back_populates="robos",
+        foreign_keys=[id_ativo],
+    )
 
     # logs.id_robo -> robos.id  (ambos em gestor_capitais)
     logs = relationship(
@@ -51,8 +55,7 @@ class Robo(Base):
         passive_deletes=True,
     )
 
-    # Se você usa relatorios/requisicoes, pode manter simples;
-    # os FKs estão definidos do outro lado.
+    # Se você usa relatorios/requisicoes, os FKs estão definidos no outro lado.
     relatorios = relationship("Relatorio", back_populates="robo", cascade="all, delete-orphan")
     requisicoes = relationship("Requisicao", back_populates="robo", cascade="all, delete-orphan")
 
