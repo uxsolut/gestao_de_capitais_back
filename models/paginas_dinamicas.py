@@ -1,40 +1,39 @@
 # models/paginas_dinamicas.py
 # -*- coding: utf-8 -*-
 from sqlalchemy import (
-    BigInteger,
+    Integer,
     Text,
     LargeBinary,
     Column,
-    UniqueConstraint,
     CheckConstraint,
 )
 from sqlalchemy.dialects import postgresql
 
-# use o Base central do projeto
 from database import Base
 
 
 class PaginaDinamica(Base):
     __tablename__ = "paginas_dinamicas"
     __table_args__ = (
-        UniqueConstraint("dominio", "slug", name="paginas_dinamicas_dominio_slug_key"),
+        # Mantemos apenas o check do slug.
         CheckConstraint(r"slug ~ '^[a-z0-9-]{1,64}$'", name="paginas_dinamicas_slug_check"),
-        {"schema": "public"},
+        # Alinhe o schema com o do banco (você usa "global")
+        {"schema": "global"},
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # id agora é INTEGER (para casar com a coluna do Postgres)
+    id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # ENUM já existente no Postgres.
-    # Mantemos a lista explícita APENAS para validação no client (validate_strings=True).
+    # ENUM existente no Postgres (não recriar)
     dominio = Column(
         postgresql.ENUM(
             "pinacle.com.br",
             "gestordecapitais.com",
-            "tetramusic.com.br",   # <- novo valor
+            "tetramusic.com.br",
             name="dominio_enum",
-            create_type=False,     # não recria o tipo (já existe no banco)
+            create_type=False,      # NÃO cria o tipo; já existe no DB
             native_enum=True,
-            validate_strings=True, # valida que o valor pertence ao enum
+            validate_strings=True,  # valida no client
         ),
         nullable=False,
     )
