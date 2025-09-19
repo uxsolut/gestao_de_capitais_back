@@ -1,3 +1,4 @@
+# models/logs.py
 from sqlalchemy import Column, Integer, Text, DateTime, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -29,7 +30,8 @@ class Log(Base):
 
     conteudo = Column(Text, nullable=False)
 
-    id_usuario   = Column(Integer, ForeignKey("gestor_capitais.users.id"))
+    # ✅ corrigido: users está no schema GLOBAL
+    id_usuario   = Column(Integer, ForeignKey("global.users.id"))
     id_robo      = Column(Integer, ForeignKey("gestor_capitais.robos.id"))
     id_robo_user = Column(Integer, ForeignKey("gestor_capitais.robos_do_user.id"))
     id_conta     = Column(Integer, ForeignKey("gestor_capitais.contas.id"))
