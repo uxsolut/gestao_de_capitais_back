@@ -7,7 +7,6 @@ class RoboDoUserBase(BaseModel):
     id_carteira: Optional[int] = Field(None, description="FK opcional para carteiras.id")
     id_conta: Optional[int]   = Field(None, description="FK opcional para contas.id")
     id_ordem: Optional[int]   = Field(None, description="FK opcional para ordens.id")
-    id_aplicacao: Optional[int] = Field(None, description="FK opcional para aplicacao.id")
 
     ligado: Optional[bool] = Field(False, description="Se o robô está ligado para essa conta")
     ativo: Optional[bool] = Field(False, description="Flag de ativo do vínculo")
