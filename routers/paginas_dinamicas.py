@@ -65,50 +65,93 @@ async def criar_pagina_dinamica(
     url_full = f"https://{dominio}/p/{slug}/"
     db_saved = False
     db_error = None
+    new_id: Optional[int] = None
+    removidos_ids: List[int] = []
+
     try:
         # Usamos NULLIF(..., '') para garantir que string vazia → NULL antes do CAST
-        sql = text("""
-            INSERT INTO global.paginas_dinamicas
-                (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado)
-            VALUES
-                (CAST(:dominio AS global.dominio_enum),
-                 :slug,
-                 :arquivo_zip,
-                 :url_completa,
-                 CAST(NULLIF(:front_ou_back, '') AS gestor_capitais.frontbackenum),
-                 CAST(NULLIF(:estado, '')        AS global.estado_enum))
-        """)
         with engine.begin() as conn:
-            conn.execute(sql, {
-                "dominio": dominio,
-                "slug": slug,
-                "arquivo_zip": data,
-                "url_completa": url_full,
-                "front_ou_back": front_ou_back or "",  # deixa vazio para o NULLIF tratar
-                "estado": estado or "",
-            })
-        db_saved = True
+            row = conn.execute(
+                text("""
+                    INSERT INTO global.paginas_dinamicas
+                        (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado)
+                    VALUES
+                        (CAST(:dominio AS global.dominio_enum),
+                         :slug,
+                         :arquivo_zip,
+                         :url_completa,
+                         CAST(NULLIF(:front_ou_back, '') AS gestor_capitais.frontbackenum),
+                         CAST(NULLIF(:estado, '')        AS global.estado_enum))
+                    RETURNING id, dominio::text AS dominio, slug, estado::text AS estado
+                """),
+                {
+                    "dominio": dominio,
+                    "slug": slug,
+                    "arquivo_zip": data,
+                    "url_completa": url_full,
+                    "front_ou_back": front_ou_back or "",  # vazio para o NULLIF tratar
+                    "estado": estado or "",
+                },
+            ).mappings().first()
+
+            new_id = int(row["id"])
+            db_saved = True
+
+            # **Regra de substituição automática somente para estados ativos**
+            if estado in {"producao", "beta", "dev"}:
+                res = conn.execute(
+                    text("""
+                        UPDATE global.paginas_dinamicas
+                           SET estado = 'desativado'::global.estado_enum
+                         WHERE dominio = CAST(:dom AS global.dominio_enum)
+                           AND slug    = :slug
+                           AND estado  = CAST(:est AS global.estado_enum)
+                           AND id     <> :id
+                        RETURNING id
+                    """),
+                    {"dom": dominio, "slug": slug, "est": estado, "id": new_id},
+                )
+                removidos_ids = [r[0] for r in res.fetchall()]
+
     except Exception as e:
         db_error = f"{e.__class__.__name__}: {e}"
         logging.getLogger("paginas_dinamicas").warning(
-            "Falha ao inserir em global.paginas_dinamicas: %s", db_error
+            "Falha ao inserir/substituir em global.paginas_dinamicas: %s", db_error
         )
 
-    # 4) dispara workflow
+    # 4) deploy conforme estado
     try:
-        GitHubPagesDeployer().dispatch(domain=dominio, slug=slug, zip_url=zip_url)
+        # 4.a) remover o(s) antigo(s) do mesmo (dominio, slug, estado) se existirem
+        if removidos_ids:
+            slug_remove = _deploy_slug(slug, estado)  # 'slug' | 'beta/slug' | 'dev/slug'
+            if slug_remove:
+                GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_remove)
+
+        # 4.b) publicar o novo se estado for ativo
+        if estado in {"producao", "beta", "dev"}:
+            slug_deploy = _deploy_slug(slug, estado)
+            GitHubPagesDeployer().dispatch(domain=dominio, slug=slug_deploy, zip_url=zip_url)
+        elif estado is None:
+            # compat: se não informar estado, manter comportamento antigo (deploy em /p/slug/)
+            GitHubPagesDeployer().dispatch(domain=dominio, slug=slug, zip_url=zip_url)
+        # se estado == 'desativado', não publica nada
     except Exception as e:
-        # se o deploy falhar, mas o DB salvou, ainda retornamos erro de gateway
-        raise HTTPException(status_code=502, detail=f"Página salva={db_saved}, mas o deploy falhou: {e}")
+        # se o deploy falhar, mas o DB salvou, retornamos erro de gateway
+        raise HTTPException(
+            status_code=502,
+            detail=f"Página salva={db_saved}, id={new_id}, mas o deploy falhou: {e}"
+        )
 
     return {
         "ok": True,
+        "id": new_id,
         "dominio": dominio,
         "slug": slug,
         "zip_url": zip_url,
         "url": url_full,
         "front_ou_back": front_ou_back,
         "estado": estado,
+        "desativados_ids": removidos_ids or [],
         "db_saved": db_saved,
         **({"db_error": db_error} if not db_saved and db_error else {}),
     }
