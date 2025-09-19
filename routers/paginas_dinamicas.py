@@ -12,6 +12,9 @@ from database import engine
 
 from pydantic import BaseModel
 
+# >>> ADD: typing (somente adição, não altera nada do que já existia)
+from typing import Optional, List, Tuple
+
 router = APIRouter(prefix="/paginas-dinamicas", tags=["Páginas Dinâmicas"])
 
 BASE_UPLOADS_DIR = os.getenv("BASE_UPLOADS_DIR", "/var/www/uploads")
@@ -156,4 +159,160 @@ def paginas_dinamicas_delete(body: DeleteBody):
         "apagado_no_banco": apagado_no_banco,
         "dominio": dominio,
         "slug": slug,
+    }
+
+
+# ======================= (NOVO) EDIÇÃO DE ESTADO =======================
+
+# helpers (apenas adicionados)
+def _deploy_slug(slug: str, estado: Optional[str]) -> Optional[str]:
+    """
+    Retorna o 'slug' que será enviado ao deploy considerando o estado.
+      - producao -> 'slug'
+      - beta/dev -> 'beta/slug' ou 'dev/slug'
+      - desativado/None -> None
+    """
+    if not estado or estado == "desativado":
+        return None
+    if estado == "producao":
+        return slug
+    return f"{estado}/{slug}"  # beta/dev
+
+def _materializar_zip(slug: str, rec_id: int, data: bytes) -> Tuple[str, str]:
+    """
+    Salva o bytea do banco como arquivo .zip público e retorna (path, url).
+    """
+    if not BASE_UPLOADS_URL:
+        raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
+    os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
+    ts = int(time.time())
+    fname = f"{slug}-{rec_id}-{ts}.zip"
+    fpath = os.path.join(BASE_UPLOADS_DIR, fname)
+    with open(fpath, "wb") as f:
+        f.write(data)
+    return fpath, f"{BASE_UPLOADS_URL}/{fname}"
+
+class EditarEstadoBody(BaseModel):
+    id: int
+    estado: str  # 'producao' | 'beta' | 'dev' | 'desativado'
+
+@router.put(
+    "/editar-estado",
+    summary="Atualiza o estado (producao/beta/dev/desativado) e gerencia deploys",
+)
+def editar_estado(body: EditarEstadoBody):
+    novo_estado = (body.estado or "").strip()
+    if novo_estado not in ESTADO_ENUM:
+        raise HTTPException(status_code=400, detail="estado inválido (producao|beta|dev|desativado).")
+
+    # 1) Ler o registro alvo
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT id,
+                       dominio::text AS dominio,
+                       slug,
+                       estado::text AS estado,
+                       arquivo_zip
+                FROM global.paginas_dinamicas
+                WHERE id = :id
+                LIMIT 1
+            """),
+            {"id": body.id},
+        ).mappings().first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Registro não encontrado.")
+
+    dominio = row["dominio"]
+    slug = row["slug"]
+    estado_atual = row["estado"]  # pode ser None
+    arquivo_zip = row["arquivo_zip"]
+
+    if dominio not in DOMINIO_ENUM:
+        raise HTTPException(status_code=400, detail="Domínio inválido no registro.")
+
+    # 2) Transação: garantir exclusividade por (dominio, slug, estado ativo) e atualizar alvo
+    removidos_ids: List[int] = []
+    estado_path_old = _deploy_slug(slug, estado_atual)
+    estado_path_new = _deploy_slug(slug, novo_estado)
+
+    with engine.begin() as conn:
+        # 2.1) Se novo estado for ativo, desativar outro que já esteja no mesmo estado para mesma URL
+        if novo_estado in {"producao", "beta", "dev"}:
+            res = conn.execute(
+                text("""
+                    UPDATE global.paginas_dinamicas
+                       SET estado = 'desativado'::global.estado_enum
+                     WHERE dominio = CAST(:dom AS global.dominio_enum)
+                       AND slug    = :slug
+                       AND estado  = CAST(:est AS global.estado_enum)
+                       AND id     <> :id
+                    RETURNING id
+                """),
+                {"dom": dominio, "slug": slug, "est": novo_estado, "id": body.id},
+            )
+            removidos_ids = [r[0] for r in res.fetchall()]
+
+        # 2.2) Atualizar o alvo para o novo estado
+        conn.execute(
+            text("""
+                UPDATE global.paginas_dinamicas
+                   SET estado = CAST(:est AS global.estado_enum)
+                 WHERE id = :id
+            """),
+            {"est": novo_estado, "id": body.id},
+        )
+
+    # 3) Pós-transação: acionar GitHub Actions
+
+    # 3.a) Remover deploy do(s) que foram desativados por conflito (mesmo estado/URL)
+    try:
+        if removidos_ids:
+            slug_remove = _deploy_slug(slug, novo_estado)  # 'slug' ou 'beta/slug' ou 'dev/slug'
+            if slug_remove:
+                GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_remove)
+    except Exception as e:
+        logging.getLogger("paginas_dinamicas").warning(
+            "Falha ao remover deploy anterior (%s): %s", removidos_ids, e
+        )
+
+    # 3.b) Se o novo estado for desativado, tirar do ar o próprio alvo (usando o estado antigo)
+    if novo_estado == "desativado":
+        try:
+            if estado_path_old:
+                GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=estado_path_old)
+        except Exception as e:
+            logging.getLogger("paginas_dinamicas").warning(
+                "Falha ao remover deploy do alvo (id=%s): %s", body.id, e
+            )
+        return {
+            "ok": True,
+            "id": body.id,
+            "dominio": dominio,
+            "slug": slug,
+            "novo_estado": novo_estado,
+            "desativados_ids": removidos_ids,
+            "deploy": {"action": "delete", "slug_removed": estado_path_old},
+        }
+
+    # 3.c) Novo estado ativo => deploy do alvo na rota correta
+    try:
+        _, zip_url = _materializar_zip(slug, body.id, arquivo_zip)
+        slug_deploy = estado_path_new  # 'slug' ou 'beta/slug' ou 'dev/slug'
+        GitHubPagesDeployer().dispatch(domain=dominio, slug=slug_deploy, zip_url=zip_url)
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Estado atualizado, mas falha ao disparar deploy do novo estado: {e}"
+        )
+
+    return {
+        "ok": True,
+        "id": body.id,
+        "dominio": dominio,
+        "slug": slug,
+        "novo_estado": novo_estado,
+        "desativados_ids": removidos_ids,
+        "deploy": {"action": "deploy", "slug_deploy": slug_deploy, "zip_url": zip_url},
     }
