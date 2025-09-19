@@ -55,9 +55,24 @@ class Robo(Base):
         passive_deletes=True,
     )
 
-    # Se você usa relatorios/requisicoes, os FKs estão definidos no outro lado.
-    relatorios = relationship("Relatorio", back_populates="robo", cascade="all, delete-orphan")
-    requisicoes = relationship("Requisicao", back_populates="robo", cascade="all, delete-orphan")
+    # relatorios.id_robo -> robos.id
+    # (deixa explícito para evitar a ambiguidade que gerou o erro)
+    relatorios = relationship(
+        "Relatorio",
+        back_populates="robo",
+        primaryjoin="Robo.id == foreign(Relatorio.id_robo)",
+        foreign_keys="Relatorio.id_robo",
+        cascade="all, delete-orphan",
+    )
+
+    # requisicoes.id_robo -> robos.id
+    requisicoes = relationship(
+        "Requisicao",
+        back_populates="robo",
+        primaryjoin="Robo.id == foreign(Requisicao.id_robo)",
+        foreign_keys="Requisicao.id_robo",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self):
         return f"<Robo id={self.id} nome={self.nome!r}>"
