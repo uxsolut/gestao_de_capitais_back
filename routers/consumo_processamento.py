@@ -18,12 +18,11 @@ from models.users import User
 from auth.auth import verificar_senha
 
 # ⚠️ manter estes imports para registrar mapeamentos no processo 9102
-from models.aplicacao import Aplicacao  # noqa: F401
 from models.requisicoes import Requisicao  # noqa: F401
 from models.robos_do_user import RoboDoUser  # noqa: F401
 import models.projeto  # noqa: F401
-import models.tipo_de_aplicacao  # noqa: F401
-import models.versao_aplicacao  # noqa: F401
+# import models.tipo_de_aplicacao  # REMOVIDO
+# import models.versao_aplicacao   # REMOVIDO
 import models.tipo_de_ordem  # noqa: F401
 import models.ordens  # noqa: F401
 import models.robos  # noqa: F401
@@ -39,8 +38,6 @@ from redis import asyncio as aioredis  # redis-py asyncio
 # Config
 # ======================================================================
 
-# O processo já tem REDIS_URL com senha e /0.
-# Global (tokens de API user) usa DB 0; ordens usam DB 1 (igual ao writer).
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 OPAQUE_NS = (os.getenv("OPAQUE_TOKEN_NAMESPACE") or "tok").strip()
 
@@ -77,10 +74,6 @@ router = APIRouter(prefix="/api/v1", tags=["Processamento"])
 # ======================================================================
 
 def _bump_db(url: str, db_index: int) -> str:
-    """
-    Força o DB no REDIS_URL trocando apenas o path (/0 -> /<db_index>).
-    O DB definido no URL tem precedência sobre o parâmetro 'db' do from_url.
-    """
     p = urlparse(url)
     new_path = f"/{db_index}"
     return urlunparse((p.scheme, p.netloc, new_path, p.params, p.query, p.fragment))
@@ -94,7 +87,6 @@ def _redis_ordens() -> aioredis.Redis:
     return aioredis.from_url(_bump_db(REDIS_URL, 1), encoding="utf-8", decode_responses=True)
 
 def _ensure_tok_prefix(k: str) -> str:
-    """Garante que a chave tenha o prefixo de namespace (ex.: 'tok:')."""
     if not k:
         return k
     return k if k.startswith(f"{OPAQUE_NS}:") else f"{OPAQUE_NS}:{k}"
@@ -141,16 +133,11 @@ async def validate_api_user_bearer(
 # ======================================================================
 
 def _collect_ids_from_ordem(o: Dict[str, Any]) -> Tuple[Optional[int], Optional[str]]:
-    """
-    Suporta vários formatos vindos do writer:
-      - id_ordem (preferido), ordem_id, order_id, id
-      - numero_unico
-    """
     id_val = (
-        o.get("id_ordem") or
-        o.get("ordem_id") or
-        o.get("order_id") or
-        o.get("id")
+        o.get("id_ordem")
+        or o.get("ordem_id")
+        or o.get("order_id")
+        or o.get("id")
     )
     try:
         oid = int(id_val) if id_val is not None else None
@@ -177,8 +164,7 @@ async def consumir_ordem(
     if not user or not verificar_senha(body.senha, user.senha):
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
-    # 2) Confirma que a conta pertence ao usuário via contas -> carteiras(id_user)
-    #    e já traz a chave do token (valor completo salvo pelo writer).
+    # 2) Confirma que a conta pertence ao usuário e lê a chave do token
     row = db.execute(
         text(f"""
             SELECT c.{ACCOUNT_TOKEN_COLUMN}
@@ -198,7 +184,6 @@ async def consumir_ordem(
     if not chave_salva:
         raise HTTPException(status_code=400, detail="Conta sem token")
 
-    # A coluna pode ter sido salva com ou sem prefixo; padroniza.
     redis_key = _ensure_tok_prefix(chave_salva)
 
     # 3) Redis (DB=1): lê o payload JSON da chave tok:<token>
@@ -228,7 +213,7 @@ async def consumir_ordem(
                 if num is not None:
                     nums.append(num)
 
-        # 5) Marca como 'Consumido' no Postgres (quando houver algo)
+        # 5) Marca como 'Consumido' no Postgres
         if ids:
             db.execute(
                 text("UPDATE ordens SET status='Consumido'::ordem_status WHERE id = ANY(:ids)"),
@@ -248,8 +233,7 @@ async def consumir_ordem(
         if ttl is not None and ttl > 0:
             await r.set(redis_key, json.dumps(payload), ex=ttl)
         else:
-            await r.set(redis_key, json.dumps(payload))  # sem expiração
-
+            await r.set(redis_key, json.dumps(payload))
     finally:
         try:
             await r.aclose()
