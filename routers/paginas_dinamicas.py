@@ -7,11 +7,9 @@ import logging
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from services.deploy_pages_service import GitHubPagesDeployer
 
-# >>> ADD: DB
 from sqlalchemy import text
 from database import engine
 
-# >>> ADD: GitHub dispatch (apenas BaseModel para o body do DELETE)
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/paginas-dinamicas", tags=["Páginas Dinâmicas"])
@@ -19,29 +17,27 @@ router = APIRouter(prefix="/paginas-dinamicas", tags=["Páginas Dinâmicas"])
 BASE_UPLOADS_DIR = os.getenv("BASE_UPLOADS_DIR", "/var/www/uploads")
 BASE_UPLOADS_URL = os.getenv("BASE_UPLOADS_URL")  # ex.: https://gestordecapitais.com/uploads
 
-# Valores permitidos (casam com os ENUMs do Postgres)
+# Valores válidos (iguais aos ENUMs no Postgres)
 DOMINIO_ENUM = {"pinacle.com.br", "gestordecapitais.com", "tetramusic.com.br"}
-FRONTBACK_ENUM = {"frontend", "backend", "fullstack"}  # gestor_capitais.frontbackenum
-ESTADO_ENUM = {"producao", "beta", "dev", "desativado"}  # global.estado_enum
-
-# =====================================================================
-# POST /criar  (cria SEMPRE uma nova linha/“versão”)
-# =====================================================================
+FRONTBACK_ENUM = {"frontend", "backend", "fullstack"}
+ESTADO_ENUM = {"producao", "beta", "dev", "desativado"}
 
 @router.post("/criar", status_code=201)
 async def criar_pagina_dinamica(
     dominio: str = Form(...),
     slug: str = Form(...),
     arquivo_zip: UploadFile = File(...),
-    # >>> NOVOS CAMPOS (opcionais)
     front_ou_back: str | None = Form(None),
     estado: str | None = Form(None),
 ):
-    # 1) validações
+    # 1) validações simples
     if not re.fullmatch(r"[a-z0-9-]{1,64}", slug):
         raise HTTPException(status_code=400, detail="Slug inválido. Use [a-z0-9-]{1,64}.")
     if dominio not in DOMINIO_ENUM:
         raise HTTPException(status_code=400, detail="Domínio inválido para global.dominio_enum.")
+    # normalizar: campos opcionais podem vir como "" no form-data
+    front_ou_back = (front_ou_back or "").strip() or None
+    estado = (estado or "").strip() or None
     if front_ou_back is not None and front_ou_back not in FRONTBACK_ENUM:
         raise HTTPException(status_code=400, detail="front_ou_back inválido (frontend|backend|fullstack).")
     if estado is not None and estado not in ESTADO_ENUM:
@@ -56,20 +52,18 @@ async def criar_pagina_dinamica(
     fname = f"{slug}-{ts}.zip"
     fpath = os.path.join(BASE_UPLOADS_DIR, fname)
 
-    data = await arquivo_zip.read()  # ler UMA vez e reutilizar
+    data = await arquivo_zip.read()
     with open(fpath, "wb") as f:
         f.write(data)
 
     zip_url = f"{BASE_UPLOADS_URL}/{fname}"
 
-    # 3) salvar NO BANCO (sempre cria uma nova linha/versão)
+    # 3) salvar no banco (sempre nova linha/versão)
     url_full = f"https://{dominio}/p/{slug}/"
     db_saved = False
+    db_error = None
     try:
-        # Nota: CAST com tipos qualificados por schema:
-        # - global.dominio_enum
-        # - gestor_capitais.frontbackenum
-        # - global.estado_enum
+        # Usamos NULLIF(..., '') para garantir que string vazia → NULL antes do CAST
         sql = text("""
             INSERT INTO global.paginas_dinamicas
                 (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado)
@@ -78,8 +72,8 @@ async def criar_pagina_dinamica(
                  :slug,
                  :arquivo_zip,
                  :url_completa,
-                 CAST(:front_ou_back AS gestor_capitais.frontbackenum),
-                 CAST(:estado AS global.estado_enum))
+                 CAST(NULLIF(:front_ou_back, '') AS gestor_capitais.frontbackenum),
+                 CAST(NULLIF(:estado, '')        AS global.estado_enum))
         """)
         with engine.begin() as conn:
             conn.execute(sql, {
@@ -87,20 +81,22 @@ async def criar_pagina_dinamica(
                 "slug": slug,
                 "arquivo_zip": data,
                 "url_completa": url_full,
-                "front_ou_back": front_ou_back,  # pode ser None -> CAST(NULL AS …) é aceito
-                "estado": estado,                # idem
+                "front_ou_back": front_ou_back or "",  # deixa vazio para o NULLIF tratar
+                "estado": estado or "",
             })
         db_saved = True
     except Exception as e:
+        db_error = f"{e.__class__.__name__}: {e}"
         logging.getLogger("paginas_dinamicas").warning(
-            "Falha ao inserir nova versão em global.paginas_dinamicas: %s", e
+            "Falha ao inserir em global.paginas_dinamicas: %s", db_error
         )
 
-    # 4) disparar o workflow (sem 'kind' ou 'zip_path')
+    # 4) dispara workflow
     try:
         GitHubPagesDeployer().dispatch(domain=dominio, slug=slug, zip_url=zip_url)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Página salva, mas o deploy falhou: {e}")
+        # se o deploy falhar, mas o DB salvou, ainda retornamos erro de gateway
+        raise HTTPException(status_code=502, detail=f"Página salva={db_saved}, mas o deploy falhou: {e}")
 
     return {
         "ok": True,
@@ -111,11 +107,11 @@ async def criar_pagina_dinamica(
         "front_ou_back": front_ou_back,
         "estado": estado,
         "db_saved": db_saved,
+        **({"db_error": db_error} if not db_saved and db_error else {}),
     }
 
-# =====================================================================
-# DELETE /delete  -> dispara Actions e apaga do banco
-# =====================================================================
+
+# ======================= DELETE =======================
 
 class DeleteBody(BaseModel):
     dominio: str
@@ -130,19 +126,16 @@ def paginas_dinamicas_delete(body: DeleteBody):
     dominio = body.dominio
     slug = body.slug
 
-    # mesmas validações mínimas do POST
     if not re.fullmatch(r"[a-z0-9-]{1,64}", slug):
         raise HTTPException(status_code=400, detail="Slug inválido. Use [a-z0-9-]{1,64}.")
     if dominio not in DOMINIO_ENUM:
         raise HTTPException(status_code=400, detail="Domínio inválido.")
 
-    # 1) Disparar o workflow de delete usando a MESMA classe/config do deploy
     try:
         GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Falha ao disparar delete no GitHub: {e}")
 
-    # 2) Apagar do banco (CAST para global.dominio_enum)
     try:
         with engine.begin() as conn:
             res = conn.execute(
