@@ -10,30 +10,51 @@ from database import Base
 
 class Robo(Base):
     __tablename__ = "robos"
+    __table_args__ = {"schema": "gestor_capitais"}
 
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(Text, nullable=False)
 
-    # Banco: timestamp without time zone NOT NULL (sem default no DB)
+    # DB: timestamp without time zone NOT NULL (sem default no DB)
     # ORM: garante valor no insert
     criado_em = Column(DateTime, nullable=False, default=datetime.utcnow)
 
-    # Banco: text[]  (NULÁVEL)
+    # DB: text[] (nullable)
     performance = Column(ARRAY(Text), nullable=True)
 
-    # Banco: integer (NULÁVEL) FK para ativos(id)
-    id_ativo = Column(Integer, ForeignKey("ativos.id"), nullable=True)
+    # FK para ativos.id no mesmo schema
+    id_ativo = Column(Integer, ForeignKey("gestor_capitais.ativos.id"), nullable=True)
 
-    # Banco: bytea (NULÁVEL)
+    # DB: bytea (nullable)
     arquivo_robo = Column(LargeBinary, nullable=True)
 
-    # -----------------
-    # RELACIONAMENTOS
-    # -----------------
+    # ----------------- RELACIONAMENTOS -----------------
+
+    # ativo (FK local -> ativos.id)
     ativo = relationship("Ativo", foreign_keys=[id_ativo])
 
-    # Mantenha apenas se existirem esses modelos/relacionamentos:
-    logs = relationship("Log", back_populates="robo", cascade="all, delete-orphan")
+    # logs.id_robo -> robos.id  (ambos em gestor_capitais)
+    logs = relationship(
+        "Log",
+        back_populates="robo",
+        primaryjoin="Robo.id == foreign(Log.id_robo)",
+        foreign_keys="Log.id_robo",
+        passive_deletes=True,
+    )
+
+    # robos_do_user.id_robo -> robos.id
+    robos_do_user = relationship(
+        "RoboDoUser",
+        back_populates="robo",
+        primaryjoin="Robo.id == foreign(RoboDoUser.id_robo)",
+        foreign_keys="RoboDoUser.id_robo",
+        passive_deletes=True,
+    )
+
+    # Se você usa relatorios/requisicoes, pode manter simples;
+    # os FKs estão definidos do outro lado.
     relatorios = relationship("Relatorio", back_populates="robo", cascade="all, delete-orphan")
     requisicoes = relationship("Requisicao", back_populates="robo", cascade="all, delete-orphan")
-    robos_do_user = relationship("RoboDoUser", back_populates="robo", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<Robo id={self.id} nome={self.nome!r}>"
