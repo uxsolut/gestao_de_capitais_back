@@ -1,16 +1,36 @@
-from sqlalchemy import Column, Integer, String, DateTime, func
+# models/projeto.py
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, text
 from sqlalchemy.orm import relationship
 from database import Base
-from models.aplicacao import Aplicacao  # <- importa a CLASSE
 
 class Projeto(Base):
     __tablename__ = "projetos"
+    __table_args__ = {"schema": "global"}
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     nome = Column(String(255), nullable=False)
 
-    criado_em = Column(DateTime, server_default=func.current_timestamp())
-    atualizado_em = Column(DateTime, server_default=func.current_timestamp(), onupdate=func.current_timestamp())
+    # só atualizado_em permanece
+    atualizado_em = Column(
+        DateTime(timezone=False),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        server_onupdate=text("CURRENT_TIMESTAMP"),
+    )
 
-    # 1-N com Aplicacao (usa a CLASSE, não string)
-    aplicacoes = relationship(Aplicacao, back_populates="projeto")
+    id_pagina_em_uso = Column(
+        Integer,
+        ForeignKey("global.paginas_dinamicas.id", onupdate="CASCADE", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    pagina_em_uso = relationship(
+        "PaginaDinamica",
+        primaryjoin="foreign(Projeto.id_pagina_em_uso)==PaginaDinamica.id",
+        lazy="joined",
+        viewonly=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<Projeto id={self.id} nome={self.nome} id_pagina_em_uso={self.id_pagina_em_uso}>"
