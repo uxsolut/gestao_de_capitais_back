@@ -2,7 +2,34 @@
 # -*- coding: utf-8 -*-
 from sqlalchemy import Integer, Text, LargeBinary, Column, CheckConstraint
 from sqlalchemy.dialects import postgresql
+
 from database import Base
+
+
+# Tipos ENUM já existentes no Postgres
+frontback_enum = postgresql.ENUM(
+    "frontend",
+    "backend",
+    "fullstack",
+    name="frontbackenum",
+    schema="gestor_capitais",
+    create_type=False,        # o tipo já existe no banco
+    native_enum=True,
+    validate_strings=True,
+)
+
+estado_enum = postgresql.ENUM(
+    "producao",
+    "beta",
+    "dev",
+    "desativado",
+    name="estado_enum",
+    schema="global",
+    create_type=False,        # o tipo já existe no banco
+    native_enum=True,
+    validate_strings=True,
+)
+
 
 class PaginaDinamica(Base):
     __tablename__ = "paginas_dinamicas"
@@ -32,5 +59,12 @@ class PaginaDinamica(Base):
     arquivo_zip = Column(LargeBinary, nullable=False)  # BYTEA
     url_completa = Column(Text, nullable=False)
 
+    # NOVAS COLUNAS
+    front_ou_back = Column(frontback_enum, nullable=True)  # gestor_capitais.frontbackenum
+    estado        = Column(estado_enum,    nullable=True)  # global.estado_enum
+
     def __repr__(self) -> str:
-        return f"<PaginaDinamica id={self.id} dominio={self.dominio} slug={self.slug}>"
+        return (
+            f"<PaginaDinamica id={self.id} dominio={self.dominio} "
+            f"slug={self.slug} front_ou_back={self.front_ou_back} estado={self.estado}>"
+        )
