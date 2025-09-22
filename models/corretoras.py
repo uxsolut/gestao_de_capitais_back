@@ -5,20 +5,18 @@ from database import Base
 
 class Corretora(Base):
     __tablename__ = "corretoras"
-    __table_args__ = {"schema": "gestor_capitais"}  # <- MESMO SCHEMA das outras tabelas
+    __table_args__ = {"schema": "gestor_capitais"}  # mesmo schema do banco
 
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String, nullable=False)
     cnpj = Column(String, nullable=True)
     telefone = Column(String, nullable=True)
     email = Column(String, nullable=True)
-    pais = Column(String, nullable=False, default="Brasil")
+    pais = Column(String, nullable=False)  # NOT NULL conforme sua tabela
 
-    # contas.id_corretora -> corretoras.id (ambas em gestor_capitais)
+    # relacionamento inverso com Conta (FK está do lado de Conta)
     contas = relationship(
         "Conta",
         back_populates="corretora",
-        primaryjoin="Corretora.id == foreign(Conta.id_corretora)",  # ajuda o SQLAlchemy
-        foreign_keys="Conta.id_corretora",
-        passive_deletes=True,
+        passive_deletes=True,  # respeita o ON DELETE SET NULL na FK
     )

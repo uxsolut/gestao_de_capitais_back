@@ -1,28 +1,38 @@
-from pydantic import BaseModel
+# schemas/corretoras.py
 from typing import Optional
+from pydantic import BaseModel
 
-# Schema base compartilhado entre entrada e saída
+# ---- Base (somente campos comuns não obrigatórios em entrada) ----
 class CorretoraBase(BaseModel):
     nome: str
     cnpj: Optional[str] = None
     telefone: Optional[str] = None
     email: Optional[str] = None
 
-# Schema usado no POST (entrada) — sem id
+# ---- Entrada (POST) ----
+# pais opcional com default "Brasil" (front pode omitir)
 class CorretoraCreate(CorretoraBase):
-    pass
+    pais: Optional[str] = "Brasil"
 
-# Schema usado no GET ou POST response — com id
+# ---- Saída (GET/POST response) ----
+# pais obrigatório aqui, refletindo NOT NULL do banco
 class Corretora(CorretoraBase):
     id: int
+    pais: str
 
+    # Pydantic v1
     class Config:
         orm_mode = True
 
-        # Schema usado no PUT (atualização) — todos os campos opcionais
+    # Pydantic v2 (se estiver usando)
+    # from pydantic import ConfigDict
+    # model_config = ConfigDict(from_attributes=True)
+
+# ---- Entrada (PUT/PATCH) ----
+# todos os campos opcionais
 class CorretoraUpdate(BaseModel):
     nome: Optional[str] = None
     cnpj: Optional[str] = None
     telefone: Optional[str] = None
     email: Optional[str] = None
-
+    pais: Optional[str] = None
