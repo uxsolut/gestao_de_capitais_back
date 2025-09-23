@@ -3,6 +3,7 @@
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
+
 # ----------------- Tipos (compatíveis com os ENUMs do Postgres) -----------------
 DominioEnum = Literal["pinacle.com.br", "gestordecapitais.com", "tetramusic.com.br"]
 FrontBackEnum = Literal["frontend", "backend", "fullstack"]
@@ -19,14 +20,10 @@ class PaginaDinamicaBase(BaseModel):
     )
     url_completa: str
     front_ou_back: Optional[FrontBackEnum] = Field(
-        None, description="Valor do enum frontbackenum"
+        None, description="Valor do enum gestor_capitais.frontbackenum"
     )
     estado: Optional[EstadoEnum] = Field(
         None, description="Valor do enum global.estado_enum"
-    )
-    # NOVO: vínculo opcional com empresa
-    id_empresa: Optional[int] = Field(
-        None, description="FK para global.empresas(id)"
     )
 
 
@@ -42,29 +39,16 @@ class PaginaDinamicaUpdate(BaseModel):
     url_completa: Optional[str] = None
     arquivo_zip: Optional[bytes] = None
     front_ou_back: Optional[FrontBackEnum] = Field(
-        None, description="Valor do enum frontbackenum"
+        None, description="Valor do enum gestor_capitais.frontbackenum"
     )
     estado: Optional[EstadoEnum] = Field(
         None, description="Valor do enum global.estado_enum"
     )
-    id_empresa: Optional[int] = Field(
-        None, description="FK para global.empresas(id)"
-    )
 
 
 # ----------------- Response -----------------
-class EmpresaOut(BaseModel):
-    id: int
-    nome: str
-
-    class Config:
-        from_attributes = True
-
-
 class PaginaDinamicaOut(PaginaDinamicaBase):
     id: int
-    # opcional: devolver dados enxutos da empresa vinculada
-    empresa: Optional[EmpresaOut] = None
 
     class Config:
         from_attributes = True  # (Pydantic v2) substitui orm_mode=True
