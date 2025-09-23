@@ -9,7 +9,7 @@ from schemas.corretoras import Corretora, CorretoraCreate, CorretoraUpdate
 from auth.dependencies import get_current_user
 from models.users import User
 
-router = APIRouter(prefix="/corretoras", tags=["Corretoras"])
+router = APIRouter(prefix="/corretoras", tags=["Corretoras"]
 
 # ---------- GET: Listar todas as corretoras ----------
 @router.get("/", response_model=List[Corretora])
