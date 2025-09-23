@@ -4,16 +4,15 @@ import os
 import time
 import re
 import logging
+from typing import Optional, List, Tuple
+
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from services.deploy_pages_service import GitHubPagesDeployer
+from pydantic import BaseModel
 
 from sqlalchemy import text
 from database import engine
 
-from pydantic import BaseModel
-
-# >>> ADD: typing (somente adição, não altera nada do que já existia)
-from typing import Optional, List, Tuple
+from services.deploy_pages_service import GitHubPagesDeployer
 
 router = APIRouter(prefix="/paginas-dinamicas", tags=["Páginas Dinâmicas"])
 
@@ -25,26 +24,43 @@ DOMINIO_ENUM = {"pinacle.com.br", "gestordecapitais.com", "tetramusic.com.br"}
 FRONTBACK_ENUM = {"frontend", "backend", "fullstack"}
 ESTADO_ENUM = {"producao", "beta", "dev", "desativado"}
 
+# Se o tipo estiver em outro schema, ajuste aqui:
+_FRONTBACK_ENUM_SCHEMA = "gestor_capitais"  # use "global" se for o seu caso
+
+
 @router.post("/criar", status_code=201)
 async def criar_pagina_dinamica(
     dominio: str = Form(...),
     slug: str = Form(...),
     arquivo_zip: UploadFile = File(...),
-    front_ou_back: str | None = Form(None),
-    estado: str | None = Form(None),
+    front_ou_back: Optional[str] = Form(None),
+    estado: Optional[str] = Form(None),
+    id_empresa: Optional[int] = Form(None),  # NOVO: vínculo com empresa (opcional)
 ):
     # 1) validações simples
     if not re.fullmatch(r"[a-z0-9-]{1,64}", slug):
         raise HTTPException(status_code=400, detail="Slug inválido. Use [a-z0-9-]{1,64}.")
     if dominio not in DOMINIO_ENUM:
         raise HTTPException(status_code=400, detail="Domínio inválido para global.dominio_enum.")
-    # normalizar: campos opcionais podem vir como "" no form-data
+
+    # normalizar opcionais ("" -> None)
     front_ou_back = (front_ou_back or "").strip() or None
     estado = (estado or "").strip() or None
+
     if front_ou_back is not None and front_ou_back not in FRONTBACK_ENUM:
         raise HTTPException(status_code=400, detail="front_ou_back inválido (frontend|backend|fullstack).")
     if estado is not None and estado not in ESTADO_ENUM:
         raise HTTPException(status_code=400, detail="estado inválido (producao|beta|dev|desativado).")
+
+    # 1.a) validar empresa, quando informada
+    if id_empresa is not None:
+        with engine.begin() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM global.empresas WHERE id = :id LIMIT 1"),
+                {"id": id_empresa},
+            ).first()
+        if not exists:
+            raise HTTPException(status_code=400, detail="id_empresa não encontrado em global.empresas.")
 
     # 2) salvar ZIP em pasta pública
     if not BASE_UPLOADS_URL:
@@ -64,33 +80,38 @@ async def criar_pagina_dinamica(
     # 3) salvar no banco (sempre nova linha/versão)
     url_full = f"https://{dominio}/p/{slug}/"
     db_saved = False
-    db_error = None
+    db_error: Optional[str] = None
     new_id: Optional[int] = None
     removidos_ids: List[int] = []
 
     try:
-        # Usamos NULLIF(..., '') para garantir que string vazia → NULL antes do CAST
+        cast_frontback = f"{_FRONTBACK_ENUM_SCHEMA}.frontbackenum"
+
         with engine.begin() as conn:
             row = conn.execute(
-                text("""
+                text(
+                    f"""
                     INSERT INTO global.paginas_dinamicas
-                        (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado)
+                        (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado, id_empresa)
                     VALUES
                         (CAST(:dominio AS global.dominio_enum),
                          :slug,
                          :arquivo_zip,
                          :url_completa,
-                         CAST(NULLIF(:front_ou_back, '') AS gestor_capitais.frontbackenum),
-                         CAST(NULLIF(:estado, '')        AS global.estado_enum))
+                         CAST(NULLIF(:front_ou_back, '') AS {cast_frontback}),
+                         CAST(NULLIF(:estado, '')        AS global.estado_enum),
+                         :id_empresa)
                     RETURNING id, dominio::text AS dominio, slug, estado::text AS estado
-                """),
+                    """
+                ),
                 {
                     "dominio": dominio,
                     "slug": slug,
                     "arquivo_zip": data,
                     "url_completa": url_full,
-                    "front_ou_back": front_ou_back or "",  # vazio para o NULLIF tratar
+                    "front_ou_back": front_ou_back or "",  # vazio para o NULLIF
                     "estado": estado or "",
+                    "id_empresa": id_empresa,
                 },
             ).mappings().first()
 
@@ -100,7 +121,8 @@ async def criar_pagina_dinamica(
             # **Regra de substituição automática somente para estados ativos**
             if estado in {"producao", "beta", "dev"}:
                 res = conn.execute(
-                    text("""
+                    text(
+                        """
                         UPDATE global.paginas_dinamicas
                            SET estado = 'desativado'::global.estado_enum
                          WHERE dominio = CAST(:dom AS global.dominio_enum)
@@ -108,7 +130,8 @@ async def criar_pagina_dinamica(
                            AND estado  = CAST(:est AS global.estado_enum)
                            AND id     <> :id
                         RETURNING id
-                    """),
+                        """
+                    ),
                     {"dom": dominio, "slug": slug, "est": estado, "id": new_id},
                 )
                 removidos_ids = [r[0] for r in res.fetchall()]
@@ -139,7 +162,7 @@ async def criar_pagina_dinamica(
         # se o deploy falhar, mas o DB salvou, retornamos erro de gateway
         raise HTTPException(
             status_code=502,
-            detail=f"Página salva={db_saved}, id={new_id}, mas o deploy falhou: {e}"
+            detail=f"Página salva={db_saved}, id={new_id}, mas o deploy falhou: {e}",
         )
 
     return {
@@ -151,9 +174,10 @@ async def criar_pagina_dinamica(
         "url": url_full,
         "front_ou_back": front_ou_back,
         "estado": estado,
+        "id_empresa": id_empresa,
         "desativados_ids": removidos_ids or [],
         "db_saved": db_saved,
-        **({"db_error": db_error} if not db_saved and db_error else {}),
+        **({"db_error": db_error} if (not db_saved and db_error) else {}),
     }
 
 
@@ -161,6 +185,7 @@ async def criar_pagina_dinamica(
 
 class DeleteBody(BaseModel):
     id: int  # deletar por ID, simples
+
 
 @router.delete(
     "/delete",
@@ -171,7 +196,8 @@ def paginas_dinamicas_delete(body: DeleteBody):
     # 1) Buscar o registro pelo id
     with engine.begin() as conn:
         row = conn.execute(
-            text("""
+            text(
+                """
                 SELECT id,
                        dominio::text AS dominio,
                        slug,
@@ -179,7 +205,8 @@ def paginas_dinamicas_delete(body: DeleteBody):
                 FROM global.paginas_dinamicas
                 WHERE id = :id
                 LIMIT 1
-            """),
+                """
+            ),
             {"id": body.id},
         ).mappings().first()
 
@@ -221,9 +248,8 @@ def paginas_dinamicas_delete(body: DeleteBody):
     }
 
 
-# ======================= (NOVO) EDIÇÃO DE ESTADO =======================
+# ======================= EDIÇÃO DE ESTADO =======================
 
-# helpers (apenas adicionados)
 def _deploy_slug(slug: str, estado: Optional[str]) -> Optional[str]:
     """
     Retorna o 'slug' que será enviado ao deploy considerando o estado.
@@ -236,6 +262,7 @@ def _deploy_slug(slug: str, estado: Optional[str]) -> Optional[str]:
     if estado == "producao":
         return slug
     return f"{estado}/{slug}"  # beta/dev
+
 
 def _materializar_zip(slug: str, rec_id: int, data: bytes) -> Tuple[str, str]:
     """
@@ -251,9 +278,11 @@ def _materializar_zip(slug: str, rec_id: int, data: bytes) -> Tuple[str, str]:
         f.write(data)
     return fpath, f"{BASE_UPLOADS_URL}/{fname}"
 
+
 class EditarEstadoBody(BaseModel):
     id: int
     estado: str  # 'producao' | 'beta' | 'dev' | 'desativado'
+
 
 @router.put(
     "/editar-estado",
@@ -267,7 +296,8 @@ def editar_estado(body: EditarEstadoBody):
     # 1) Ler o registro alvo
     with engine.begin() as conn:
         row = conn.execute(
-            text("""
+            text(
+                """
                 SELECT id,
                        dominio::text AS dominio,
                        slug,
@@ -276,7 +306,8 @@ def editar_estado(body: EditarEstadoBody):
                 FROM global.paginas_dinamicas
                 WHERE id = :id
                 LIMIT 1
-            """),
+                """
+            ),
             {"id": body.id},
         ).mappings().first()
 
@@ -300,7 +331,8 @@ def editar_estado(body: EditarEstadoBody):
         # 2.1) Se novo estado for ativo, desativar outro que já esteja no mesmo estado para mesma URL
         if novo_estado in {"producao", "beta", "dev"}:
             res = conn.execute(
-                text("""
+                text(
+                    """
                     UPDATE global.paginas_dinamicas
                        SET estado = 'desativado'::global.estado_enum
                      WHERE dominio = CAST(:dom AS global.dominio_enum)
@@ -308,18 +340,21 @@ def editar_estado(body: EditarEstadoBody):
                        AND estado  = CAST(:est AS global.estado_enum)
                        AND id     <> :id
                     RETURNING id
-                """),
+                    """
+                ),
                 {"dom": dominio, "slug": slug, "est": novo_estado, "id": body.id},
             )
             removidos_ids = [r[0] for r in res.fetchall()]
 
         # 2.2) Atualizar o alvo para o novo estado
         conn.execute(
-            text("""
+            text(
+                """
                 UPDATE global.paginas_dinamicas
                    SET estado = CAST(:est AS global.estado_enum)
                  WHERE id = :id
-            """),
+                """
+            ),
             {"est": novo_estado, "id": body.id},
         )
 
@@ -328,7 +363,7 @@ def editar_estado(body: EditarEstadoBody):
     # 3.a) Remover deploy do(s) que foram desativados por conflito (mesmo estado/URL)
     try:
         if removidos_ids:
-            slug_remove = _deploy_slug(slug, novo_estado)  # 'slug' ou 'beta/slug' ou 'dev/slug'
+            slug_remove = _deploy_slug(slug, novo_estado)  # 'slug' | 'beta/slug' | 'dev/slug'
             if slug_remove:
                 GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_remove)
     except Exception as e:
@@ -363,7 +398,7 @@ def editar_estado(body: EditarEstadoBody):
     except Exception as e:
         raise HTTPException(
             status_code=502,
-            detail=f"Estado atualizado, mas falha ao disparar deploy do novo estado: {e}"
+            detail=f"Estado atualizado, mas falha ao disparar deploy do novo estado: {e}",
         )
 
     return {

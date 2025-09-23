@@ -35,9 +35,6 @@ from routers import (
     robos_do_user,
     ordens,
     corretoras as r_corretoras,
-    # aplicacao,            # REMOVIDO
-    # versao_aplicacao,     # REMOVIDO
-    projeto,
     dashboard,
     cliente_contas,
     health,
@@ -124,7 +121,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_corretoras.router)
         # app.include_router(aplicacao.router)        # REMOVIDO
         # app.include_router(versao_aplicacao.router) # REMOVIDO
-        app.include_router(projeto.router)
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
         app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])
@@ -141,7 +137,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_corretoras.router)
         # app.include_router(aplicacao.router)        # REMOVIDO
         # app.include_router(versao_aplicacao.router) # REMOVIDO
-        app.include_router(projeto.router)
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
         app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])
