@@ -1,50 +1,31 @@
 # models/paginas_dinamicas.py
 # -*- coding: utf-8 -*-
-from __future__ import annotations
-
-from sqlalchemy import (
-    Column, Integer, Text, LargeBinary, CheckConstraint, ForeignKey
-)
-from sqlalchemy.dialects.postgresql import ENUM as PGEnum
-from sqlalchemy.orm import relationship
+from sqlalchemy import Integer, Text, LargeBinary, Column, CheckConstraint
+from sqlalchemy.dialects import postgresql
 
 from database import Base
 
 
-# ============================
-# Tipos ENUM já existentes
-# (não recriar: create_type=False)
-# ============================
-dominio_enum = PGEnum(
-    "pinacle.com.br",
-    "gestordecapitais.com",
-    "tetramusic.com.br",
-    name="dominio_enum",
-    schema="global",
-    create_type=False,
-    native_enum=True,
-    validate_strings=True,
-)
-
-frontback_enum = PGEnum(
+# Tipos ENUM já existentes no Postgres
+frontback_enum = postgresql.ENUM(
     "frontend",
     "backend",
     "fullstack",
     name="frontbackenum",
-    schema="global",          # <-- ajustado para o schema global
-    create_type=False,
+    schema="gestor_capitais",
+    create_type=False,        # o tipo já existe no banco
     native_enum=True,
     validate_strings=True,
 )
 
-estado_enum = PGEnum(
+estado_enum = postgresql.ENUM(
     "producao",
     "beta",
     "dev",
     "desativado",
     name="estado_enum",
     schema="global",
-    create_type=False,
+    create_type=False,        # o tipo já existe no banco
     native_enum=True,
     validate_strings=True,
 )
@@ -54,31 +35,35 @@ class PaginaDinamica(Base):
     __tablename__ = "paginas_dinamicas"
     __table_args__ = (
         CheckConstraint(r"slug ~ '^[a-z0-9-]{1,64}$'", name="paginas_dinamicas_slug_check"),
-        {"schema": "global"},
+        {"schema": "global"},  # tabela está em global.paginas_dinamicas
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    dominio = Column(dominio_enum, nullable=False)
+    # ENUM já existente no schema global
+    dominio = Column(
+        postgresql.ENUM(
+            "pinacle.com.br",
+            "gestordecapitais.com",
+            "tetramusic.com.br",
+            name="dominio_enum",
+            schema="global",
+            create_type=False,
+            native_enum=True,
+            validate_strings=True,
+        ),
+        nullable=False,
+    )
+
     slug = Column(Text, nullable=False)
     arquivo_zip = Column(LargeBinary, nullable=False)  # BYTEA
     url_completa = Column(Text, nullable=False)
 
-    front_ou_back = Column(frontback_enum, nullable=True)
-    estado = Column(estado_enum, nullable=True)
+    # NOVAS COLUNAS
+    front_ou_back = Column(frontback_enum, nullable=True)  # gestor_capitais.frontbackenum
+    estado        = Column(estado_enum,    nullable=True)  # global.estado_enum
 
-    # ---- NOVO: vínculo com Empresa ----
-    id_empresa = Column(
-        Integer,
-        ForeignKey("global.empresas.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
-    # relação inversa
-    empresa = relationship("Empresa", back_populates="paginas_dinamicas")
-
-    def __repr__(self) -> str:  # pragma: no cover
+    def __repr__(self) -> str:
         return (
             f"<PaginaDinamica id={self.id} dominio={self.dominio} "
             f"slug={self.slug} front_ou_back={self.front_ou_back} estado={self.estado}>"
