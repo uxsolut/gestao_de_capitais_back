@@ -331,7 +331,6 @@ class ProcessamentoRepository:
     ):
         """
         Insere um log em gestor_capitais.logs.
-        OBS: campo id_aplicacao foi removido do schema.
         """
         try:
             with self.db.get_postgres_connection() as conn, conn.cursor() as cursor:

@@ -33,8 +33,6 @@ class User(Base):
     carteiras     = relationship("Carteira",     back_populates="user", cascade="all, delete-orphan")
     logs          = relationship("Log",          back_populates="usuario", cascade="all, delete-orphan")
     relatorios    = relationship("Relatorio",    back_populates="user")
-    # REMOVIDO: versoes_aplicacao (tabela/mapper excluídos)
-    # versoes_aplicacao = relationship("VersaoAplicacao", back_populates="user")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', tipo='{self.tipo_de_user}')>"

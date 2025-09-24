@@ -102,7 +102,6 @@ class ProcessamentoService:
                 tipo="notificacao",
                 conteudo=f"Requisição {requisicao_id} criada para robô {id_robo}",
                 id_usuario=system_user_id,
-                id_aplicacao=1,
                 id_robo=id_robo,
             )
 
@@ -117,7 +116,6 @@ class ProcessamentoService:
                     tipo="problema",
                     conteudo=f"Nenhuma conta ligada encontrada para robô {id_robo}",
                     id_usuario=system_user_id,
-                    id_aplicacao=1,
                     id_robo=id_robo,
                 )
                 return ErrorResponse(
@@ -262,7 +260,6 @@ class ProcessamentoService:
                     tipo="notificacao",
                     conteudo=f"Redis organizado para requisicao {requisicao_id} (conta {conta_nome})",
                     id_usuario=c.get("id_user"),
-                    id_aplicacao=1,
                     id_robo_user=c.get("id_robo_user"),
                     id_robo=id_robo,
                     id_conta=conta_id,
@@ -291,7 +288,6 @@ class ProcessamentoService:
                     tipo="problema",
                     conteudo=f"Erro no processamento: {str(e)}",
                     id_usuario=user_data.get("system_user_id") or getattr(settings, "SYSTEM_USER_ID", 1),
-                    id_aplicacao=1,
                     id_robo=dados_requisicao.get("id_robo"),
                 )
             except Exception:
