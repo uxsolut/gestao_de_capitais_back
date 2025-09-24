@@ -1,21 +1,29 @@
 # routers/empresas.py
 # -*- coding: utf-8 -*-
-from fastapi import APIRouter
 from typing import List
-from sqlalchemy import text
-from database import engine
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.orm import Session
+
+from auth.dependencies import get_db, get_current_user
+from models.users import User
+from models.empresas import Empresa
 from schemas.empresas import EmpresaOut
 
 router = APIRouter(prefix="/empresas", tags=["Empresas"])
 
-@router.get("", response_model=List[EmpresaOut], summary="Listar Empresas")
-def listar_empresas():
-    with engine.begin() as conn:
-        rows = conn.execute(
-            text("""
-                SELECT id, nome, descricao, ramo_de_atividade
-                FROM global.empresas
-                ORDER BY id
-            """)
-        ).mappings().all()
-    return [EmpresaOut(**dict(r)) for r in rows]
+@router.get(
+    "/",
+    response_model=List[EmpresaOut],
+    status_code=status.HTTP_200_OK,
+    summary="Listar empresas (protegido por JWT)",
+)
+def listar_empresas(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retorna todas as empresas.
+    - Protegido por JWT (usa `get_current_user`).
+    - Ordena por `id` ascendente.
+    """
+    return db.query(Empresa).order_by(Empresa.id.asc()).all()
