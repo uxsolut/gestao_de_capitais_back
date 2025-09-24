@@ -20,6 +20,7 @@ from auth.auth import verificar_senha
 # ⚠️ manter estes imports para registrar mapeamentos no processo 9102
 from models.requisicoes import Requisicao  # noqa: F401
 from models.robos_do_user import RoboDoUser  # noqa: F401
+
 import models.tipo_de_ordem  # noqa: F401
 import models.ordens  # noqa: F401
 import models.robos  # noqa: F401
