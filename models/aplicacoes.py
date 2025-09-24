@@ -1,6 +1,6 @@
-# models/paginas_dinamicas.py
+# models/aplicacoes.py
 # -*- coding: utf-8 -*-
-from sqlalchemy import Integer, Text, LargeBinary, Column, CheckConstraint
+from sqlalchemy import Integer, Text, LargeBinary, Column, CheckConstraint, ForeignKey
 from sqlalchemy.dialects import postgresql
 
 from database import Base
@@ -31,11 +31,11 @@ estado_enum = postgresql.ENUM(
 )
 
 
-class PaginaDinamica(Base):
-    __tablename__ = "paginas_dinamicas"
+class Aplicacao(Base):
+    __tablename__ = "aplicacoes"
     __table_args__ = (
-        CheckConstraint(r"slug ~ '^[a-z0-9-]{1,64}$'", name="paginas_dinamicas_slug_check"),
-        {"schema": "global"},  # tabela está em global.paginas_dinamicas
+        CheckConstraint(r"slug ~ '^[a-z0-9-]{1,64}$'", name="aplicacoes_slug_check"),
+        {"schema": "global"},  # tabela está em global.aplicacoes
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -63,8 +63,16 @@ class PaginaDinamica(Base):
     front_ou_back = Column(frontback_enum, nullable=True)  # gestor_capitais.frontbackenum
     estado        = Column(estado_enum,    nullable=True)  # global.estado_enum
 
+    # FK para global.empresas(id) com ON DELETE SET NULL
+    id_empresa = Column(
+        Integer,
+        ForeignKey("global.empresas.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     def __repr__(self) -> str:
         return (
-            f"<PaginaDinamica id={self.id} dominio={self.dominio} "
-            f"slug={self.slug} front_ou_back={self.front_ou_back} estado={self.estado}>"
+            f"<Aplicacao id={self.id} dominio={self.dominio} "
+            f"slug={self.slug} front_ou_back={self.front_ou_back} estado={self.estado} "
+            f"id_empresa={self.id_empresa}>"
         )

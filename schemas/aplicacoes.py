@@ -1,17 +1,15 @@
-# schemas/paginas_dinamicas.py
+# schemas/aplicacoes.py
 # -*- coding: utf-8 -*-
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
-
 
 # ----------------- Tipos (compatíveis com os ENUMs do Postgres) -----------------
 DominioEnum = Literal["pinacle.com.br", "gestordecapitais.com", "tetramusic.com.br"]
 FrontBackEnum = Literal["frontend", "backend", "fullstack"]
 EstadoEnum = Literal["producao", "beta", "dev", "desativado"]
 
-
 # ----------------- Base -----------------
-class PaginaDinamicaBase(BaseModel):
+class AplicacaoBase(BaseModel):
     dominio: DominioEnum = Field(..., description="Valor do enum global.dominio_enum")
     slug: str = Field(
         ...,
@@ -25,15 +23,16 @@ class PaginaDinamicaBase(BaseModel):
     estado: Optional[EstadoEnum] = Field(
         None, description="Valor do enum global.estado_enum"
     )
-
+    id_empresa: Optional[int] = Field(
+        None, description="FK opcional para global.empresas.id"
+    )
 
 # ----------------- Create / Update -----------------
-class PaginaDinamicaCreate(PaginaDinamicaBase):
+class AplicacaoCreate(AplicacaoBase):
     # bytes em Pydantic casa com BYTEA/LargeBinary no SQLAlchemy
     arquivo_zip: bytes
 
-
-class PaginaDinamicaUpdate(BaseModel):
+class AplicacaoUpdate(BaseModel):
     dominio: Optional[DominioEnum] = Field(None, description="Valor do enum global.dominio_enum")
     slug: Optional[str] = Field(None, pattern=r"^[a-z0-9-]{1,64}$")
     url_completa: Optional[str] = None
@@ -44,10 +43,12 @@ class PaginaDinamicaUpdate(BaseModel):
     estado: Optional[EstadoEnum] = Field(
         None, description="Valor do enum global.estado_enum"
     )
-
+    id_empresa: Optional[int] = Field(
+        None, description="FK opcional para global.empresas.id"
+    )
 
 # ----------------- Response -----------------
-class PaginaDinamicaOut(PaginaDinamicaBase):
+class AplicacaoOut(AplicacaoBase):
     id: int
 
     class Config:

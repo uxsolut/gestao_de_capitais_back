@@ -25,7 +25,7 @@ from models import robos as m_robos  # noqa: F401
 from models import requisicoes as m_requisicao  # noqa: F401
 from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401
 from models import ordens as m_ordens  # noqa: F401
-from models import paginas_dinamicas as m_paginas_dinamicas  # noqa: F401
+from models import aplicacoes as m_aplicacoes  # noqa: F401  <-- renomeado
 
 # --- Routers "públicos" de app (EXCETO processamento/consumo) ---
 from routers import (
@@ -39,7 +39,7 @@ from routers import (
     cliente_contas,
     health,
 )
-from routers import paginas_dinamicas  # router das páginas dinâmicas
+from routers import aplicacoes  # router de Aplicações
 from routers import tipo_de_ordem as r_tipo_de_ordem
 from routers import ativos as r_ativos
 from routers import analises as r_analises
@@ -121,7 +121,8 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_corretoras.router)
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
-        app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])
+        # router de Aplicações (mantive a tag coerente)
+        app.include_router(aplicacoes.router, tags=["Aplicações"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
@@ -135,7 +136,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_corretoras.router)
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
-        app.include_router(paginas_dinamicas.router, tags=["Páginas Dinâmicas"])
+        app.include_router(aplicacoes.router, tags=["Aplicações"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
