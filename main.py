@@ -26,6 +26,7 @@ from models import requisicoes as m_requisicao  # noqa: F401
 from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401
 from models import ordens as m_ordens  # noqa: F401
 from models import aplicacoes as m_aplicacoes  # noqa: F401  <-- renomeado
+from models import empresas as m_empresas  # noqa: F401   # <-- ADICIONADO
 
 # --- Routers "públicos" de app (EXCETO processamento/consumo) ---
 from routers import (
@@ -43,6 +44,7 @@ from routers import aplicacoes  # router de Aplicações
 from routers import tipo_de_ordem as r_tipo_de_ordem
 from routers import ativos as r_ativos
 from routers import analises as r_analises
+from routers import empresas as r_empresas   # <-- ADICIONADO
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -123,6 +125,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(cliente_contas.router)
         # router de Aplicações (mantive a tag coerente)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
+        app.include_router(r_empresas.router, tags=["Empresas"])   # <-- ADICIONADO
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
@@ -137,6 +140,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
+        app.include_router(r_empresas.router, tags=["Empresas"])   # <-- ADICIONADO
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
