@@ -62,7 +62,9 @@ class Aplicacao(Base):
         nullable=False,
     )
 
-    slug = Column(Text, nullable=False)
+    # Agora o slug aceita NULL para homepage por domínio/estado
+    slug = Column(Text, nullable=True)
+
     arquivo_zip = Column(LargeBinary, nullable=False)  # BYTEA
     url_completa = Column(Text, nullable=False)
 
@@ -70,7 +72,7 @@ class Aplicacao(Base):
     front_ou_back = Column(frontback_enum, nullable=True)  # gestor_capitais.frontbackenum
     estado        = Column(estado_enum,    nullable=True)  # global.estado_enum
 
-    # Nova coluna booleana
+    # Coluna booleana
     precisa_logar = Column(Boolean, nullable=False, server_default=text("false"))
 
     # FK para global.empresas(id) com ON DELETE SET NULL

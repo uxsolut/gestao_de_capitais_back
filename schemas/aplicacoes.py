@@ -11,12 +11,15 @@ EstadoEnum = Literal["producao", "beta", "dev", "desativado"]
 # ----------------- Base -----------------
 class AplicacaoBase(BaseModel):
     dominio: DominioEnum = Field(..., description="Valor do enum global.dominio_enum")
-    slug: str = Field(
-        ...,
+
+    # Agora opcional: quando None, é a homepage do domínio/estado
+    slug: Optional[str] = Field(
+        None,
         pattern=r"^[a-z0-9-]{1,64}$",
-        description="Slug minúsculo com hífens (1 a 64 chars)",
+        description="Slug minúsculo com hífens (1 a 64 chars). Se omitido/None, a página é a homepage do domínio/estado.",
     )
-    url_completa: str
+
+    url_completa: str  # calculada no backend
     front_ou_back: Optional[FrontBackEnum] = Field(
         None, description="Valor do enum gestor_capitais.frontbackenum"
     )
@@ -38,7 +41,11 @@ class AplicacaoCreate(AplicacaoBase):
 
 class AplicacaoUpdate(BaseModel):
     dominio: Optional[DominioEnum] = Field(None, description="Valor do enum global.dominio_enum")
-    slug: Optional[str] = Field(None, pattern=r"^[a-z0-9-]{1,64}$")
+    slug: Optional[str] = Field(
+        None,
+        pattern=r"^[a-z0-9-]{1,64}$",
+        description="Quando None, define como homepage do domínio/estado."
+    )
     url_completa: Optional[str] = None
     arquivo_zip: Optional[bytes] = None
     front_ou_back: Optional[FrontBackEnum] = Field(
