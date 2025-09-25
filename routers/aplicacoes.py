@@ -31,30 +31,33 @@ def _is_producao(estado: Optional[str]) -> bool:
 
 def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str]) -> str:
     """
+    URL pública SEM '/p':
+
     - producao:
         - sem slug -> https://dominio/
-        - com slug -> https://dominio/p/<slug>
+        - com slug -> https://dominio/<slug>
     - beta/dev:
-        - sem slug -> https://dominio/p/<estado>
-        - com slug -> https://dominio/p/<estado>/<slug>
+        - sem slug -> https://dominio/<estado>
+        - com slug -> https://dominio/<estado>/<slug>
     """
-    base = f"https://{dominio}"
+    base = f"https://{dominio}".rstrip("/")
+    s = (slug or "").strip("/")
     if _is_producao(estado):
-        return f"{base}/p/{slug}" if slug else f"{base}/"
-    # beta/dev:
-    return f"{base}/p/{estado}/{slug}" if slug else f"{base}/p/{estado}"
+        return f"{base}/" if not s else f"{base}/{s}"
+    e = (estado or "").strip("/")
+    return f"{base}/{e}" if not s else f"{base}/{e}/{s}"
 
 def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
     """
-    Caminho enviado ao workflow:
-      - producao:    slug or "" (raiz)
-      - beta/dev:    'beta/slug' | 'beta' | 'dev/slug' | 'dev'
+    Caminho enviado ao workflow (SEM '/p'):
+      - producao:    '' (raiz) ou '<slug>'
+      - beta/dev:    'beta' | 'dev' | 'beta/<slug>' | 'dev/<slug>'
       - desativado/None: None (não publicar)
     """
     if not estado or estado == "desativado":
         return None
     if estado == "producao":
-        return slug or ""  # '' = raiz
+        return (slug or "")  # '' = raiz
     return f"{estado}/{slug}" if slug else estado
 
 def _normalize_slug(raw: Optional[str]) -> Optional[str]:
@@ -102,9 +105,9 @@ async def criar_aplicacao(
     with open(fpath, "wb") as f:
         f.write(data)
 
-    zip_url = f"{BASE_UPLOADS_URL}/{fname}"
+    zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
 
-    # 3) calcular URL final
+    # 3) calcular URL final (SEM /p)
     url_full = _canonical_url(dominio, estado, slug)
 
     # 4) desativar conflitantes (se ativo) e inserir nova linha
@@ -288,7 +291,7 @@ def _materializar_zip(slug: Optional[str], rec_id: int, data: bytes) -> Tuple[st
     fpath = os.path.join(BASE_UPLOADS_DIR, fname)
     with open(fpath, "wb") as f:
         f.write(data)
-    return fpath, f"{BASE_UPLOADS_URL}/{fname}"
+    return fpath, f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
 
 
 class EditarEstadoBody(BaseModel):
@@ -354,7 +357,7 @@ def editar_estado(body: EditarEstadoBody):
             )
             removidos_ids = [r[0] for r in res.fetchall()]
 
-        # 2.2) Atualizar o alvo para o novo estado e recalcular url_completa
+        # 2.2) Atualizar o alvo para o novo estado e recalcular url_completa (SEM /p)
         nova_url = _canonical_url(dominio, novo_estado, slug)
         conn.execute(
             text("""
@@ -398,7 +401,7 @@ def editar_estado(body: EditarEstadoBody):
             "deploy": {"action": "delete", "slug_removed": estado_path_old},
         }
 
-    # 3.c) Novo estado ativo => deploy do alvo na rota correta
+    # 3.c) Novo estado ativo => deploy do alvo na rota correta (SEM /p)
     try:
         _, zip_url = _materializar_zip(slug, body.id, arquivo_zip)
         slug_deploy = estado_path_new  # '', 'slug', 'beta', 'beta/slug'
