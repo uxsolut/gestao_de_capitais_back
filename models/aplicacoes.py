@@ -14,7 +14,6 @@ from sqlalchemy.dialects import postgresql
 
 from database import Base
 
-
 # Tipos ENUM já existentes no Postgres
 frontback_enum = postgresql.ENUM(
     "frontend",
@@ -38,7 +37,6 @@ estado_enum = postgresql.ENUM(
     native_enum=True,
     validate_strings=True,
 )
-
 
 class Aplicacao(Base):
     __tablename__ = "aplicacoes"
@@ -68,14 +66,12 @@ class Aplicacao(Base):
     arquivo_zip = Column(LargeBinary, nullable=False)  # BYTEA
     url_completa = Column(Text, nullable=False)
 
-    # Colunas existentes (ENUMs)
+    # Colunas (ENUMs)
     front_ou_back = Column(frontback_enum, nullable=True)  # gestor_capitais.frontbackenum
     estado        = Column(estado_enum,    nullable=True)  # global.estado_enum
 
-    # NOVAS COLUNAS booleanas
-    # NOT NULL DEFAULT false no servidor, para refletir exatamente o schema do Postgres
+    # Nova coluna booleana
     precisa_logar = Column(Boolean, nullable=False, server_default=text("false"))
-    home          = Column(Boolean, nullable=False, server_default=text("false"))
 
     # FK para global.empresas(id) com ON DELETE SET NULL
     id_empresa = Column(
@@ -88,6 +84,6 @@ class Aplicacao(Base):
         return (
             f"<Aplicacao id={self.id} dominio={self.dominio} slug={self.slug} "
             f"front_ou_back={self.front_ou_back} estado={self.estado} "
-            f"precisa_logar={self.precisa_logar} home={self.home} "
+            f"precisa_logar={self.precisa_logar} "
             f"id_empresa={self.id_empresa}>"
         )
