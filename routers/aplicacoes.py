@@ -30,6 +30,14 @@ def _is_producao(estado: Optional[str]) -> bool:
     return (estado or "producao") == "producao"
 
 def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str]) -> str:
+    """
+    - producao:
+        - sem slug -> https://dominio/
+        - com slug -> https://dominio/p/<slug>
+    - beta/dev:
+        - sem slug -> https://dominio/p/<estado>
+        - com slug -> https://dominio/p/<estado>/<slug>
+    """
     base = f"https://{dominio}"
     if _is_producao(estado):
         return f"{base}/p/{slug}" if slug else f"{base}/"
@@ -38,16 +46,10 @@ def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str]) -> 
 
 def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
     """
-    Retorna o 'slug' que será enviado ao deploy considerando o estado.
-      - producao:
-          - com slug -> 'slug'   (deploy em /p/slug)
-          - sem slug -> ''       (deploy na raiz do domínio '/')
-      - beta/dev:
-          - com slug -> 'beta/slug' ou 'dev/slug'   (deploy em /p/estado/slug)
-          - sem slug -> 'beta' ou 'dev'             (deploy em /p/estado)
-      - desativado/None -> None (não publicar)
-    Obs.: Se você também quiser servir '/{estado}' além de '/p/{estado}' para homepage de estado,
-          faça um redirect/alias no Nginx.
+    Caminho enviado ao workflow:
+      - producao:    slug or "" (raiz)
+      - beta/dev:    'beta/slug' | 'beta' | 'dev/slug' | 'dev'
+      - desativado/None: None (não publicar)
     """
     if not estado or estado == "desativado":
         return None
@@ -105,7 +107,7 @@ async def criar_aplicacao(
     # 3) calcular URL final
     url_full = _canonical_url(dominio, estado, slug)
 
-    # 4) salvar no banco (sempre nova linha/versão)
+    # 4) desativar conflitantes (se ativo) e inserir nova linha
     db_saved = False
     db_error = None
     new_id: Optional[int] = None
@@ -113,6 +115,22 @@ async def criar_aplicacao(
 
     try:
         with engine.begin() as conn:
+            # 4.1) Se estado for ativo, DESATIVAR antes de inserir (slug null-aware)
+            if estado in {"producao", "beta", "dev"}:
+                res = conn.execute(
+                    text("""
+                        UPDATE global.aplicacoes
+                           SET estado = 'desativado'::global.estado_enum
+                         WHERE dominio = CAST(:dom AS global.dominio_enum)
+                           AND slug IS NOT DISTINCT FROM :slug
+                           AND estado  = CAST(:est AS global.estado_enum)
+                        RETURNING id
+                    """),
+                    {"dom": dominio, "slug": slug, "est": estado},
+                )
+                removidos_ids = [r[0] for r in res.fetchall()]
+
+            # 4.2) Inserir a nova versão
             row = conn.execute(
                 text("""
                     INSERT INTO global.aplicacoes
@@ -144,23 +162,6 @@ async def criar_aplicacao(
 
             new_id = int(row["id"])
             db_saved = True
-
-            # **Regra de substituição automática somente para estados ativos**
-            if estado in {"producao", "beta", "dev"}:
-                # IS NOT DISTINCT FROM => compara inclusive NULL = NULL
-                res = conn.execute(
-                    text("""
-                        UPDATE global.aplicacoes
-                           SET estado = 'desativado'::global.estado_enum
-                         WHERE dominio = CAST(:dom AS global.dominio_enum)
-                           AND slug IS NOT DISTINCT FROM :slug
-                           AND estado  = CAST(:est AS global.estado_enum)
-                           AND id     <> :id
-                        RETURNING id
-                    """),
-                    {"dom": dominio, "slug": slug, "est": estado, "id": new_id},
-                )
-                removidos_ids = [r[0] for r in res.fetchall()]
 
     except Exception as e:
         db_error = f"{e.__class__.__name__}: {e}"
@@ -321,7 +322,7 @@ def editar_estado(body: EditarEstadoBody):
         ).mappings().first()
 
     if not row:
-        raise HTTPException(status_code=404, detail="Registro não encontrado.")
+        raise HTTPException(statuscode=404, detail="Registro não encontrado.")
 
     dominio = row["dominio"]
     slug = row["slug"]               # pode ser None
