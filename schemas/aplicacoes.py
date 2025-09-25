@@ -26,6 +26,13 @@ class AplicacaoBase(BaseModel):
     id_empresa: Optional[int] = Field(
         None, description="FK opcional para global.empresas.id"
     )
+    # Novas colunas booleanas (NOT NULL DEFAULT false no banco)
+    precisa_logar: bool = Field(
+        False, description="Se true, requer autenticação/JWT para acesso."
+    )
+    home: bool = Field(
+        False, description="Marca a aplicação como homepage padrão do domínio."
+    )
 
 # ----------------- Create / Update -----------------
 class AplicacaoCreate(AplicacaoBase):
@@ -45,6 +52,12 @@ class AplicacaoUpdate(BaseModel):
     )
     id_empresa: Optional[int] = Field(
         None, description="FK opcional para global.empresas.id"
+    )
+    precisa_logar: Optional[bool] = Field(
+        None, description="Se informado, atualiza exigência de autenticação."
+    )
+    home: Optional[bool] = Field(
+        None, description="Se informado, atualiza flag de homepage padrão."
     )
 
 # ----------------- Response -----------------

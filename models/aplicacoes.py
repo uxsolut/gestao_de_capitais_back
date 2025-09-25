@@ -1,6 +1,15 @@
 # models/aplicacoes.py
 # -*- coding: utf-8 -*-
-from sqlalchemy import Integer, Text, LargeBinary, Column, CheckConstraint, ForeignKey
+from sqlalchemy import (
+    Integer,
+    Text,
+    LargeBinary,
+    Column,
+    CheckConstraint,
+    ForeignKey,
+    Boolean,
+    text,
+)
 from sqlalchemy.dialects import postgresql
 
 from database import Base
@@ -59,9 +68,14 @@ class Aplicacao(Base):
     arquivo_zip = Column(LargeBinary, nullable=False)  # BYTEA
     url_completa = Column(Text, nullable=False)
 
-    # NOVAS COLUNAS
+    # Colunas existentes (ENUMs)
     front_ou_back = Column(frontback_enum, nullable=True)  # gestor_capitais.frontbackenum
     estado        = Column(estado_enum,    nullable=True)  # global.estado_enum
+
+    # NOVAS COLUNAS booleanas
+    # NOT NULL DEFAULT false no servidor, para refletir exatamente o schema do Postgres
+    precisa_logar = Column(Boolean, nullable=False, server_default=text("false"))
+    home          = Column(Boolean, nullable=False, server_default=text("false"))
 
     # FK para global.empresas(id) com ON DELETE SET NULL
     id_empresa = Column(
@@ -72,7 +86,8 @@ class Aplicacao(Base):
 
     def __repr__(self) -> str:
         return (
-            f"<Aplicacao id={self.id} dominio={self.dominio} "
-            f"slug={self.slug} front_ou_back={self.front_ou_back} estado={self.estado} "
+            f"<Aplicacao id={self.id} dominio={self.dominio} slug={self.slug} "
+            f"front_ou_back={self.front_ou_back} estado={self.estado} "
+            f"precisa_logar={self.precisa_logar} home={self.home} "
             f"id_empresa={self.id_empresa}>"
         )
