@@ -31,24 +31,6 @@ def listar_empresas(
     return db.query(Empresa).order_by(Empresa.id.asc()).all()
 
 
-# ============================ GET (por id) ============================
-@router.get(
-    "/{id}",
-    response_model=EmpresaOut,
-    status_code=status.HTTP_200_OK,
-    summary="Obter empresa por ID (protegido por JWT)",
-)
-def obter_empresa(
-    id: int = Path(..., gt=0),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    emp = db.query(Empresa).get(id)
-    if not emp:
-        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
-    return emp
-
-
 # ============================ POST (criar) ============================
 @router.post(
     "/",
