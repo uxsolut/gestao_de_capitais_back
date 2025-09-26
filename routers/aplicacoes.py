@@ -4,14 +4,19 @@ import os
 import time
 import re
 import logging
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from services.deploy_pages_service import GitHubPagesDeployer
+from typing import Optional, List, Tuple
+
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends
+from pydantic import BaseModel
 
 from sqlalchemy import text
 from database import engine
 
-from pydantic import BaseModel
-from typing import Optional, List, Tuple
+# 🔐 Proteção igual às outras APIs
+from auth.dependencies import get_current_user
+from models.users import User
+
+from services.deploy_pages_service import GitHubPagesDeployer
 
 router = APIRouter(prefix="/aplicacoes", tags=["Aplicações"])
 
@@ -24,21 +29,30 @@ FRONTBACK_ENUM = {"frontend", "backend", "fullstack"}
 ESTADO_ENUM = {"producao", "beta", "dev", "desativado"}
 
 
-# ======================= Helpers =======================
+# =========================================================
+#                  MODELS para respostas
+# =========================================================
+class AplicacaoOut(BaseModel):
+    id: int
+    dominio: str
+    slug: Optional[str] = None
+    url_completa: Optional[str] = None
+    front_ou_back: Optional[str] = None
+    estado: Optional[str] = None
+    id_empresa: Optional[int] = None
+    precisa_logar: bool
 
+
+# ======================= Helpers =======================
 def _is_producao(estado: Optional[str]) -> bool:
     return (estado or "producao") == "producao"
+
 
 def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str]) -> str:
     """
     URL pública SEM '/p':
-
-    - producao:
-        - sem slug -> https://dominio/
-        - com slug -> https://dominio/<slug>
-    - beta/dev:
-        - sem slug -> https://dominio/<estado>
-        - com slug -> https://dominio/<estado>/<slug>
+    - producao:  https://dominio/  ou  https://dominio/<slug>
+    - beta/dev:  https://dominio/<estado>  ou  https://dominio/<estado>/<slug>
     """
     base = f"https://{dominio}".rstrip("/")
     s = (slug or "").strip("/")
@@ -47,22 +61,19 @@ def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str]) -> 
     e = (estado or "").strip("/")
     return f"{base}/{e}" if not s else f"{base}/{e}/{s}"
 
+
 def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
-    """
-    Caminho enviado ao workflow (SEM '/p'):
-      - producao:    '' (raiz) ou '<slug>'
-      - beta/dev:    'beta' | 'dev' | 'beta/<slug>' | 'dev/<slug>'
-      - desativado/None: None (não publicar)
-    """
     if not estado or estado == "desativado":
         return None
     if estado == "producao":
         return (slug or "")  # '' = raiz
     return f"{estado}/{slug}" if slug else estado
 
+
 def _normalize_slug(raw: Optional[str]) -> Optional[str]:
     s = (raw or "").strip()
     return s or None
+
 
 def _validate_inputs(dominio: str, slug: Optional[str], front_ou_back: Optional[str], estado: Optional[str]):
     if dominio not in DOMINIO_ENUM:
@@ -75,8 +86,77 @@ def _validate_inputs(dominio: str, slug: Optional[str], front_ou_back: Optional[
         raise HTTPException(status_code=400, detail="estado inválido (producao|beta|dev|desativado).")
 
 
-# ======================= POST (criar) =======================
+# =========================================================
+#                         GET
+# =========================================================
+@router.get(
+    "/por-empresa",
+    response_model=List[AplicacaoOut],
+    summary="Lista aplicações por id_empresa (protegido por usuário dono da empresa)",
+)
+def listar_aplicacoes_por_empresa(
+    id_empresa: int = Query(..., gt=0, description="ID da empresa dona das aplicações"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    - Verifica se **id_empresa** pertence ao **current_user**.
+    - Retorna somente registros de `global.aplicacoes` com esse `id_empresa`.
+    - Não retorna o bytea (`arquivo_zip`).
+    """
+    # 1) Autorização: a empresa é do usuário logado?
+    with engine.begin() as conn:
+        dono = conn.execute(
+            text("""
+                SELECT 1
+                  FROM global.empresas
+                 WHERE id = :id_empresa
+                   AND user_id = :uid
+                 LIMIT 1
+            """),
+            {"id_empresa": id_empresa, "uid": current_user.id},
+        ).scalar()
 
+    if not dono:
+        raise HTTPException(status_code=403, detail="Você não tem acesso a esta empresa.")
+
+    # 2) Buscar aplicações da empresa
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT
+                    id,
+                    dominio::text AS dominio,
+                    slug,
+                    url_completa,
+                    front_ou_back::text AS front_ou_back,
+                    estado::text AS estado,
+                    id_empresa,
+                    precisa_logar
+                FROM global.aplicacoes
+                WHERE id_empresa = :id_empresa
+                ORDER BY id DESC
+            """),
+            {"id_empresa": id_empresa},
+        ).mappings().all()
+
+    return [
+        AplicacaoOut(
+            id=r["id"],
+            dominio=r["dominio"],
+            slug=r["slug"],
+            url_completa=r["url_completa"],
+            front_ou_back=r["front_ou_back"],
+            estado=r["estado"],
+            id_empresa=r["id_empresa"],
+            precisa_logar=bool(r["precisa_logar"]),
+        )
+        for r in rows
+    ]
+
+
+# =========================================================
+#                       POST (criar)
+# =========================================================
 @router.post("/criar", status_code=201)
 async def criar_aplicacao(
     dominio: str = Form(...),
@@ -213,7 +293,6 @@ async def criar_aplicacao(
 
 
 # ======================= DELETE (por id) =======================
-
 class DeleteBody(BaseModel):
     id: int  # deletar por ID, simples
 
@@ -278,7 +357,6 @@ def aplicacoes_delete(body: DeleteBody):
 
 
 # ======================= EDIÇÃO DE ESTADO =======================
-
 def _materializar_zip(slug: Optional[str], rec_id: int, data: bytes) -> Tuple[str, str]:
     """
     Salva o bytea do banco como arquivo .zip público e retorna (path, url).
@@ -403,6 +481,7 @@ def editar_estado(body: EditarEstadoBody):
 
     # 3.c) Novo estado ativo => deploy do alvo na rota correta (SEM /p)
     try:
+        # materializa ZIP para o workflow
         _, zip_url = _materializar_zip(slug, body.id, arquivo_zip)
         slug_deploy = estado_path_new  # '', 'slug', 'beta', 'beta/slug'
         GitHubPagesDeployer().dispatch(domain=dominio, slug=slug_deploy or "", zip_url=zip_url)
