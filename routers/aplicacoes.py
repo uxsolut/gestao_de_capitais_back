@@ -92,34 +92,29 @@ def _validate_inputs(dominio: Optional[str], slug: Optional[str], front_ou_back:
 @router.get(
     "/por-empresa",
     response_model=List[AplicacaoOut],
-    summary="Lista aplicações por id_empresa (protegido por usuário dono da empresa)",
+    summary="Lista aplicações por id_empresa (requer autenticação)",
 )
 def listar_aplicacoes_por_empresa(
     id_empresa: int = Query(..., gt=0, description="ID da empresa dona das aplicações"),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),  # só exige JWT; não valida 'dono'
 ):
     """
-    - Verifica se **id_empresa** pertence ao **current_user**.
-    - Retorna somente registros de `global.aplicacoes` com esse `id_empresa`.
+    - Requer autenticação (JWT), mas **não** valida propriedade da empresa
+      (a tabela global.empresas não tem user_id).
+    - Retorna registros de `global.aplicacoes` com esse `id_empresa`.
     - Não retorna o bytea (`arquivo_zip`).
     """
-    # 1) Autorização: a empresa é do usuário logado?
+    # (opcional) garantir que a empresa existe
     with engine.begin() as conn:
-        dono = conn.execute(
-            text("""
-                SELECT 1
-                  FROM global.empresas
-                 WHERE id = :id_empresa
-                   AND user_id = :uid
-                 LIMIT 1
-            """),
-            {"id_empresa": id_empresa, "uid": current_user.id},
+        existe = conn.execute(
+            text("SELECT 1 FROM global.empresas WHERE id = :id LIMIT 1"),
+            {"id": id_empresa},
         ).scalar()
 
-    if not dono:
-        raise HTTPException(status_code=403, detail="Você não tem acesso a esta empresa.")
+    if not existe:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
 
-    # 2) Buscar aplicações da empresa
+    # buscar aplicações
     with engine.begin() as conn:
         rows = conn.execute(
             text("""
@@ -152,6 +147,7 @@ def listar_aplicacoes_por_empresa(
         )
         for r in rows
     ]
+
 
 
 # =========================================================
