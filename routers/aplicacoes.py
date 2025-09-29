@@ -48,25 +48,18 @@ def _is_producao(estado: Optional[str]) -> bool:
     return (estado or "producao") == "producao"
 
 
-def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str]) -> Optional[str]:
+def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str]) -> str:
     """
-    URL pública SEM '/p'.
-    - producao:  https://dominio/            ou  https://dominio/<slug>
-    - beta/dev:  https://dominio/<estado>    ou  https://dominio/<estado>/<slug>
-    - desativado: **sem URL** (retorna None)
+    URL pública SEM '/p':
+    - producao:  https://dominio/  ou  https://dominio/<slug>
+    - beta/dev:  https://dominio/<estado>  ou  https://dominio/<estado>/<slug>
     """
-    if estado == "desativado":
-        return None  # nada de /desativado na URL pública
-
     base = f"https://{dominio}".rstrip("/")
     s = (slug or "").strip("/")
-
-    if (estado or "producao") == "producao":
+    if _is_producao(estado):
         return f"{base}/" if not s else f"{base}/{s}"
-
     e = (estado or "").strip("/")
     return f"{base}/{e}" if not s else f"{base}/{e}/{s}"
-
 
 
 def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
