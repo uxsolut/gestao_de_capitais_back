@@ -294,7 +294,7 @@ class EditarAplicacaoBody(BaseModel):
 
 @router.put(
     "/editar",
-    summary="Editar aplicação (PUT unificado). Sempre atualiza o banco; só dispara deploy se mudar (e efetivamente alterar) 'estado', 'dominio' ou 'slug'.",
+    summary="Editar aplicação (PUT unificado). Sempre atualiza o banco; deploy SEMPRE se novo estado for ativo; delete quando mudar para desativado.",
 )
 def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get_current_user)):
     # 1) Ler registro atual
@@ -329,21 +329,14 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     old_zip           = row["arquivo_zip"]
 
     # 2) Normalizar/validar entradas
-    # slug: "" -> None
     new_slug = old_slug if body.slug is None else _normalize_slug(body.slug)
     new_dominio    = old_dominio if body.dominio is None else body.dominio
-    new_estado     = old_estado if body.estado  is None else body.estado
+    new_estado     = old_estado  if body.estado  is None else body.estado
     new_frontback  = old_frontback if body.front_ou_back is None else body.front_ou_back
     new_id_empresa = old_id_empresa if body.id_empresa is None else body.id_empresa
     new_precisa    = old_precisa_logar if body.precisa_logar is None else body.precisa_logar
 
     _validate_inputs(new_dominio, new_slug, new_frontback, new_estado)
-
-    # 3) Detectar mudanças relevantes
-    changed_dominio = (body.dominio is not None) and (new_dominio != old_dominio)
-    changed_slug    = (body.slug    is not None) and (new_slug    != old_slug)
-    changed_estado  = (body.estado  is not None) and (new_estado  != old_estado)
-    touched_deploy  = changed_dominio or changed_slug or changed_estado
 
     old_path_active = old_estado in {"producao", "beta", "dev"}
     new_path_active = new_estado in {"producao", "beta", "dev"}
@@ -351,12 +344,12 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     old_path = _deploy_slug(old_slug, old_estado)
     new_path = _deploy_slug(new_slug, new_estado)
 
-    # 4) Transação de atualização + resolução de conflitos se necessário
+    # 3) Transação de atualização + resolução de conflitos se novo estado for ativo
     removidos_ids: List[int] = []
 
     with engine.begin() as conn:
-        # 4.1) Se o novo estado for ativo (e vamos mexer nele), garanta exclusividade (dominio,slug,estado)
-        if new_path_active and touched_deploy:
+        if new_path_active:
+            # garantir exclusividade mesmo que nada tenha mudado
             res = conn.execute(
                 text("""
                     UPDATE global.aplicacoes
@@ -371,7 +364,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
             )
             removidos_ids = [r[0] for r in res.fetchall()]
 
-        # 4.2) Atualizar o registro (sempre atualiza, independentemente de deploy)
+        # Atualiza sempre
         nova_url = _canonical_url(new_dominio, new_estado, new_slug)
         conn.execute(
             text("""
@@ -397,64 +390,43 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
             },
         )
 
-    # 5) Regras de deploy:
-    #    - Só dispara se mudou (e efetivamente alterou) dominio/slug/estado.
-    #    - Cenários:
-    #       a) ativo -> desativado: remover old_path
-    #       b) ativo -> ativo: remover old_path (se path mudou) e publicar new_path
-    #       c) desativado -> ativo: publicar new_path
-    #       d) desativado -> desativado: nada
-    #       e) ativo -> ativo sem path change e sem estado change: nada
-    if touched_deploy:
-        try:
-            # a) remover deploy de conflitos desativados (mesmo estado/URL)
+    # 4) Regras de deploy com o novo comportamento
+    try:
+        # 4.1) Se novo estado é ATIVO -> sempre (re)deployer
+        if new_path_active:
+            # Se o caminho antigo é diferente, remover o antigo antes
+            if old_path_active and old_path and (old_path != new_path):
+                GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
+
+            # materializa ZIP do banco para o workflow
+            if not BASE_UPLOADS_URL:
+                raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
+            ts = int(time.time())
+            fname = f"{(new_slug or 'root')}-{body.id}-{ts}.zip"
+            fpath = os.path.join(BASE_UPLOADS_DIR, fname)
+            os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
+            with open(fpath, "wb") as f:
+                f.write(old_zip)
+            zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
+
+            # se houve conflitos desativados com mesmo path, garantir limpeza prévia
             if removidos_ids and new_path is not None:
                 GitHubPagesDeployer().dispatch_delete(domain=new_dominio, slug=new_path or "")
 
-            # b) transições envolvendo o próprio registro
-            if old_path_active and not new_path_active:
-                # ativo -> desativado
-                if old_path is not None:
-                    GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
+            GitHubPagesDeployer().dispatch(domain=new_dominio, slug=new_path or "", zip_url=zip_url)
 
-            elif old_path_active and new_path_active:
-                # ativo -> ativo
-                if (changed_dominio or changed_slug or changed_estado) and (old_path != new_path):
-                    # remove o antigo se o caminho mudou
-                    if old_path is not None:
-                        GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
-                    # publica o novo
-                    if not BASE_UPLOADS_URL:
-                        raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
-                    ts = int(time.time())
-                    fname = f"{(new_slug or 'root')}-{body.id}-{ts}.zip"
-                    fpath = os.path.join(BASE_UPLOADS_DIR, fname)
-                    os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
-                    with open(fpath, "wb") as f:
-                        f.write(old_zip)
-                    zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
-                    GitHubPagesDeployer().dispatch(domain=new_dominio, slug=new_path or "", zip_url=zip_url)
+        # 4.2) Se mudou PARA desativado -> só delete (quando aplicável)
+        elif (not new_path_active) and old_path_active and (new_estado == "desativado") and (old_path is not None):
+            GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
 
-            elif (not old_path_active) and new_path_active:
-                # desativado -> ativo
-                if not BASE_UPLOADS_URL:
-                    raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
-                ts = int(time.time())
-                fname = f"{(new_slug or 'root')}-{body.id}-{ts}.zip"
-                fpath = os.path.join(BASE_UPLOADS_DIR, fname)
-                os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
-                with open(fpath, "wb") as f:
-                    f.write(old_zip)
-                zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
-                GitHubPagesDeployer().dispatch(domain=new_dominio, slug=new_path or "", zip_url=zip_url)
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Edição aplicada, mas falha ao processar deploy: {e}",
-            )
+        # 4.3) Se continua desativado sem mudança -> nada de deploy
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Edição aplicada, mas falha ao processar deploy: {e}",
+        )
 
     return {
         "ok": True,
@@ -465,7 +437,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
         "id_empresa": new_id_empresa,
         "front_ou_back": new_frontback,
         "precisa_logar": new_precisa,
-        "deploy_tocado": touched_deploy,
+        "deploy": "feito" if new_path_active else ("delete" if (old_path_active and new_estado == "desativado") else "nenhum"),
         "desativados_por_conflito": removidos_ids,
     }
 
