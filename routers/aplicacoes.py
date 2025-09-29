@@ -228,6 +228,7 @@ async def criar_aplicacao(
     front_ou_back: str | None = Form(None),
     estado: str | None = Form(None),
     id_empresa: int | None = Form(None),
+    anotacoes: Optional[str] = Form(None),
 ):
     # (… INALTERADO …)
     slug = _normalize_slug(slug)
@@ -282,7 +283,8 @@ async def criar_aplicacao(
                          :url_completa,
                          CAST(NULLIF(:front_ou_back, '') AS gestor_capitais.frontbackenum),
                          CAST(NULLIF(:estado, '')        AS global.estado_enum),
-                         :id_empresa)
+                         :id_empresa,
+                         :anotacoes)
                     RETURNING id,
                               dominio::text AS dominio,
                               slug,
@@ -297,6 +299,7 @@ async def criar_aplicacao(
                     "front_ou_back": front_ou_back or "",
                     "estado": estado or "",
                     "id_empresa": id_empresa,
+                    "anotacoes": anotacoes,
                 },
             ).mappings().first()
 
