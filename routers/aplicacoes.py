@@ -6,7 +6,7 @@ import re
 import logging
 from typing import Optional, List, Tuple
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, status
 from pydantic import BaseModel
 
 from sqlalchemy import text
@@ -96,15 +96,13 @@ def _validate_inputs(dominio: Optional[str], slug: Optional[str], front_ou_back:
 )
 def listar_aplicacoes_por_empresa(
     id_empresa: int = Query(..., gt=0, description="ID da empresa dona das aplicações"),
-    current_user: User = Depends(get_current_user),  # só exige JWT; não valida 'dono'
+    current_user: User = Depends(get_current_user),
 ):
     """
-    - Requer autenticação (JWT), mas **não** valida propriedade da empresa
-      (a tabela global.empresas não tem user_id).
+    - Requer autenticação (JWT), mas **não** valida propriedade da empresa.
     - Retorna registros de `global.aplicacoes` com esse `id_empresa`.
     - Não retorna o bytea (`arquivo_zip`).
     """
-    # (opcional) garantir que a empresa existe
     with engine.begin() as conn:
         existe = conn.execute(
             text("SELECT 1 FROM global.empresas WHERE id = :id LIMIT 1"),
@@ -114,7 +112,6 @@ def listar_aplicacoes_por_empresa(
     if not existe:
         raise HTTPException(status_code=404, detail="Empresa não encontrada.")
 
-    # buscar aplicações
     with engine.begin() as conn:
         rows = conn.execute(
             text("""
@@ -149,11 +146,10 @@ def listar_aplicacoes_por_empresa(
     ]
 
 
-
 # =========================================================
 #                       POST (criar)
 # =========================================================
-@router.post("/criar", status_code=201)
+@router.post("/criar", status_code=status.HTTP_201_CREATED)
 async def criar_aplicacao(
     dominio: str = Form(...),
     slug: Optional[str] = Form(None),                 # agora opcional
@@ -194,7 +190,6 @@ async def criar_aplicacao(
 
     try:
         with engine.begin() as conn:
-            # 4.1) Se estado for ativo, DESATIVAR antes de inserir (slug null-aware)
             if estado in {"producao", "beta", "dev"}:
                 res = conn.execute(
                     text("""
@@ -209,7 +204,6 @@ async def criar_aplicacao(
                 )
                 removidos_ids = [r[0] for r in res.fetchall()]
 
-            # 4.2) Inserir a nova versão
             row = conn.execute(
                 text("""
                     INSERT INTO global.aplicacoes
@@ -230,7 +224,7 @@ async def criar_aplicacao(
                 """),
                 {
                     "dominio": dominio,
-                    "slug": slug,                     # pode ser None
+                    "slug": slug,
                     "arquivo_zip": data,
                     "url_completa": url_full,
                     "front_ou_back": front_ou_back or "",
@@ -250,23 +244,18 @@ async def criar_aplicacao(
 
     # 5) deploy conforme estado
     try:
-        # 5.a) remover o(s) antigo(s) do mesmo (dominio, [slug], estado) se existirem
         if removidos_ids:
-            slug_remove = _deploy_slug(slug, estado)  # '', 'slug', 'beta', 'beta/slug', ...
+            slug_remove = _deploy_slug(slug, estado)
             if slug_remove is not None:
-                GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_remove)
+                GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_remove or "")
 
-        # 5.b) publicar o novo se estado for ativo
         if estado in {"producao", "beta", "dev"}:
             slug_deploy = _deploy_slug(slug, estado)
             GitHubPagesDeployer().dispatch(domain=dominio, slug=slug_deploy or "", zip_url=zip_url)
         elif estado is None:
-            # compat antigo → considerar produção
             slug_deploy = _deploy_slug(slug, "producao")
             GitHubPagesDeployer().dispatch(domain=dominio, slug=slug_deploy or "", zip_url=zip_url)
-        # se estado == 'desativado', não publica nada
     except Exception as e:
-        # se o deploy falhar, mas o DB salvou, retornamos erro de gateway
         raise HTTPException(
             status_code=502,
             detail=f"Aplicação salva={db_saved}, id={new_id}, mas o deploy falhou: {e}"
@@ -288,11 +277,16 @@ async def criar_aplicacao(
     }
 
 
-# ======================= PUT (editar campos gerais) =======================
+# =========================================================
+#                PUT ÚNICO (editar geral)
+# =========================================================
 class EditarAplicacaoBody(BaseModel):
     id: int
+    # Campos que podem mexer no deploy
     dominio: Optional[str] = None                  # global.dominio_enum
     slug: Optional[str] = None                     # [a-z0-9-]{1,64} ou None
+    estado: Optional[str] = None                   # global.estado_enum
+    # Campos só de banco (NÃO disparam deploy)
     front_ou_back: Optional[str] = None            # gestor_capitais.frontbackenum
     id_empresa: Optional[int] = None               # FK empresas.id
     precisa_logar: Optional[bool] = None           # boolean
@@ -300,9 +294,9 @@ class EditarAplicacaoBody(BaseModel):
 
 @router.put(
     "/editar",
-    summary="Editar domínio/slug/front_ou_back/id_empresa/precisa_logar (deploy somente se necessário)",
+    summary="Editar aplicação (PUT unificado). Sempre atualiza o banco; só dispara deploy se mudar (e efetivamente alterar) 'estado', 'dominio' ou 'slug'.",
 )
-def editar_aplicacao(body: EditarAplicacaoBody):
+def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get_current_user)):
     # 1) Ler registro atual
     with engine.begin() as conn:
         row = conn.execute(
@@ -336,59 +330,65 @@ def editar_aplicacao(body: EditarAplicacaoBody):
 
     # 2) Normalizar/validar entradas
     # slug: "" -> None
-    new_slug = None
-    if body.slug is not None:
-        s = (body.slug or "").strip()
-        new_slug = s or None
-    else:
-        new_slug = old_slug
+    new_slug = old_slug if body.slug is None else _normalize_slug(body.slug)
+    new_dominio    = old_dominio if body.dominio is None else body.dominio
+    new_estado     = old_estado if body.estado  is None else body.estado
+    new_frontback  = old_frontback if body.front_ou_back is None else body.front_ou_back
+    new_id_empresa = old_id_empresa if body.id_empresa is None else body.id_empresa
+    new_precisa    = old_precisa_logar if body.precisa_logar is None else body.precisa_logar
 
-    new_dominio    = body.dominio if body.dominio is not None else old_dominio
-    new_frontback  = body.front_ou_back if body.front_ou_back is not None else old_frontback
-    new_id_empresa = body.id_empresa if body.id_empresa is not None else old_id_empresa
-    new_precisa    = body.precisa_logar if body.precisa_logar is not None else old_precisa_logar
+    _validate_inputs(new_dominio, new_slug, new_frontback, new_estado)
 
-    _validate_inputs(new_dominio, new_slug, new_frontback, None)
+    # 3) Detectar mudanças relevantes
+    changed_dominio = (body.dominio is not None) and (new_dominio != old_dominio)
+    changed_slug    = (body.slug    is not None) and (new_slug    != old_slug)
+    changed_estado  = (body.estado  is not None) and (new_estado  != old_estado)
+    touched_deploy  = changed_dominio or changed_slug or changed_estado
 
-    # 3) Detectar se o PATH público mudou (domínio/slug) — estado não muda aqui
-    path_changed = (new_dominio != old_dominio) or (new_slug != old_slug)
-    estado_ativo = old_estado in {"producao", "beta", "dev"}
+    old_path_active = old_estado in {"producao", "beta", "dev"}
+    new_path_active = new_estado in {"producao", "beta", "dev"}
+
+    old_path = _deploy_slug(old_slug, old_estado)
+    new_path = _deploy_slug(new_slug, new_estado)
 
     # 4) Transação de atualização + resolução de conflitos se necessário
     removidos_ids: List[int] = []
+
     with engine.begin() as conn:
-        # 4.1) Se path mudará e o estado é ativo, desativar conflito na URL alvo
-        if path_changed and estado_ativo:
+        # 4.1) Se o novo estado for ativo (e vamos mexer nele), garanta exclusividade (dominio,slug,estado)
+        if new_path_active and touched_deploy:
             res = conn.execute(
                 text("""
                     UPDATE global.aplicacoes
                        SET estado = 'desativado'::global.estado_enum
                      WHERE dominio = CAST(:dom AS global.dominio_enum)
                        AND slug IS NOT DISTINCT FROM :slug
-                       AND estado = CAST(:est AS global.estado_enum)
-                       AND id <> :id
+                       AND estado  = CAST(:est AS global.estado_enum)
+                       AND id     <> :id
                     RETURNING id
                 """),
-                {"dom": new_dominio, "slug": new_slug, "est": old_estado, "id": body.id},
+                {"dom": new_dominio, "slug": new_slug, "est": new_estado, "id": body.id},
             )
             removidos_ids = [r[0] for r in res.fetchall()]
 
-        # 4.2) Atualizar o registro
-        nova_url = _canonical_url(new_dominio, old_estado, new_slug)
+        # 4.2) Atualizar o registro (sempre atualiza, independentemente de deploy)
+        nova_url = _canonical_url(new_dominio, new_estado, new_slug)
         conn.execute(
             text("""
                 UPDATE global.aplicacoes
-                   SET dominio      = CAST(:dominio AS global.dominio_enum),
-                       slug         = :slug,
-                       front_ou_back= CAST(NULLIF(:fb, '') AS gestor_capitais.frontbackenum),
-                       id_empresa   = :id_empresa,
-                       precisa_logar= :precisa_logar,
-                       url_completa = :url
+                   SET dominio       = CAST(:dominio AS global.dominio_enum),
+                       slug          = :slug,
+                       estado        = CAST(:estado AS global.estado_enum),
+                       front_ou_back = CAST(NULLIF(:fb, '') AS gestor_capitais.frontbackenum),
+                       id_empresa    = :id_empresa,
+                       precisa_logar = :precisa_logar,
+                       url_completa  = :url
                  WHERE id = :id
             """),
             {
                 "dominio": new_dominio,
                 "slug": new_slug,
+                "estado": new_estado,
                 "fb": new_frontback or "",
                 "id_empresa": new_id_empresa,
                 "precisa_logar": new_precisa,
@@ -397,36 +397,63 @@ def editar_aplicacao(body: EditarAplicacaoBody):
             },
         )
 
-    # 5) GitHub Actions apenas se o PATH mudou e estado é ativo
-    if path_changed and estado_ativo:
-        old_path = _deploy_slug(old_slug, old_estado)
-        new_path = _deploy_slug(new_slug, old_estado)
-
-        # 5.a) remover deploy antigo (se existia)
+    # 5) Regras de deploy:
+    #    - Só dispara se mudou (e efetivamente alterou) dominio/slug/estado.
+    #    - Cenários:
+    #       a) ativo -> desativado: remover old_path
+    #       b) ativo -> ativo: remover old_path (se path mudou) e publicar new_path
+    #       c) desativado -> ativo: publicar new_path
+    #       d) desativado -> desativado: nada
+    #       e) ativo -> ativo sem path change e sem estado change: nada
+    if touched_deploy:
         try:
-            if old_path is not None:
-                GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
-        except Exception as e:
-            logging.getLogger("aplicacoes").warning("Falha ao remover deploy antigo: %s", e)
+            # a) remover deploy de conflitos desativados (mesmo estado/URL)
+            if removidos_ids and new_path is not None:
+                GitHubPagesDeployer().dispatch_delete(domain=new_dominio, slug=new_path or "")
 
-        # 5.b) publicar no novo path usando o ZIP do banco
-        try:
-            if not BASE_UPLOADS_URL:
-                raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
-            # materializar ZIP para o workflow
-            ts = int(time.time())
-            fname = f"{(new_slug or 'root')}-{body.id}-{ts}.zip"
-            fpath = os.path.join(BASE_UPLOADS_DIR, fname)
-            os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
-            with open(fpath, "wb") as f:
-                f.write(old_zip)
-            zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
+            # b) transições envolvendo o próprio registro
+            if old_path_active and not new_path_active:
+                # ativo -> desativado
+                if old_path is not None:
+                    GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
 
-            GitHubPagesDeployer().dispatch(domain=new_dominio, slug=(new_path or ""), zip_url=zip_url)
+            elif old_path_active and new_path_active:
+                # ativo -> ativo
+                if (changed_dominio or changed_slug or changed_estado) and (old_path != new_path):
+                    # remove o antigo se o caminho mudou
+                    if old_path is not None:
+                        GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
+                    # publica o novo
+                    if not BASE_UPLOADS_URL:
+                        raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
+                    ts = int(time.time())
+                    fname = f"{(new_slug or 'root')}-{body.id}-{ts}.zip"
+                    fpath = os.path.join(BASE_UPLOADS_DIR, fname)
+                    os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
+                    with open(fpath, "wb") as f:
+                        f.write(old_zip)
+                    zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
+                    GitHubPagesDeployer().dispatch(domain=new_dominio, slug=new_path or "", zip_url=zip_url)
+
+            elif (not old_path_active) and new_path_active:
+                # desativado -> ativo
+                if not BASE_UPLOADS_URL:
+                    raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
+                ts = int(time.time())
+                fname = f"{(new_slug or 'root')}-{body.id}-{ts}.zip"
+                fpath = os.path.join(BASE_UPLOADS_DIR, fname)
+                os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
+                with open(fpath, "wb") as f:
+                    f.write(old_zip)
+                zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
+                GitHubPagesDeployer().dispatch(domain=new_dominio, slug=new_path or "", zip_url=zip_url)
+
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=502,
-                detail=f"Edição aplicada, mas falha ao disparar deploy do novo path: {e}",
+                detail=f"Edição aplicada, mas falha ao processar deploy: {e}",
             )
 
     return {
@@ -434,11 +461,11 @@ def editar_aplicacao(body: EditarAplicacaoBody):
         "id": body.id,
         "dominio": new_dominio,
         "slug": new_slug,
-        "estado": old_estado,
+        "estado": new_estado,
         "id_empresa": new_id_empresa,
         "front_ou_back": new_frontback,
         "precisa_logar": new_precisa,
-        "path_changed": path_changed,
+        "deploy_tocado": touched_deploy,
         "desativados_por_conflito": removidos_ids,
     }
 
@@ -453,7 +480,7 @@ class DeleteBody(BaseModel):
     summary="aplicacoes delete (por id)",
     description="Remove o deploy (se estiver no ar) e apaga o registro pelo id.",
 )
-def aplicacoes_delete(body: DeleteBody):
+def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current_user)):
     # 1) Buscar o registro pelo id
     with engine.begin() as conn:
         row = conn.execute(
@@ -504,150 +531,4 @@ def aplicacoes_delete(body: DeleteBody):
         "estado": estado,
         "github_action": {"workflow": "delete-landing", "slug_removed": slug_path},
         "apagado_no_banco": apagado_no_banco,
-    }
-
-
-# ======================= EDIÇÃO DE ESTADO =======================
-def _materializar_zip(slug: Optional[str], rec_id: int, data: bytes) -> Tuple[str, str]:
-    """
-    Salva o bytea do banco como arquivo .zip público e retorna (path, url).
-    """
-    if not BASE_UPLOADS_URL:
-        raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
-    os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
-    ts = int(time.time())
-    fname = f"{(slug or 'root')}-{rec_id}-{ts}.zip"
-    fpath = os.path.join(BASE_UPLOADS_DIR, fname)
-    with open(fpath, "wb") as f:
-        f.write(data)
-    return fpath, f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
-
-
-class EditarEstadoBody(BaseModel):
-    id: int
-    estado: str  # 'producao' | 'beta' | 'dev' | 'desativado'
-
-
-@router.put(
-    "/editar-estado",
-    summary="Atualiza o estado (producao/beta/dev/desativado) e gerencia deploys",
-)
-def editar_estado(body: EditarEstadoBody):
-    novo_estado = (body.estado or "").strip()
-    if novo_estado not in ESTADO_ENUM:
-        raise HTTPException(status_code=400, detail="estado inválido (producao|beta|dev|desativado).")
-
-    # 1) Ler o registro alvo
-    with engine.begin() as conn:
-        row = conn.execute(
-            text("""
-                SELECT id,
-                       dominio::text AS dominio,
-                       slug,
-                       estado::text  AS estado,
-                       arquivo_zip
-                FROM global.aplicacoes
-                WHERE id = :id
-                LIMIT 1
-            """),
-            {"id": body.id},
-        ).mappings().first()
-
-    if not row:
-        raise HTTPException(statuscode=404, detail="Registro não encontrado.")
-
-    dominio = row["dominio"]
-    slug = row["slug"]               # pode ser None
-    estado_atual = row["estado"]     # pode ser None
-    arquivo_zip = row["arquivo_zip"]
-
-    if dominio not in DOMINIO_ENUM:
-        raise HTTPException(status_code=400, detail="Domínio inválido no registro.")
-
-    # 2) Transação: garantir exclusividade por (dominio, [slug], estado ativo) e atualizar alvo
-    removidos_ids: List[int] = []
-    estado_path_old = _deploy_slug(slug, estado_atual)
-    estado_path_new = _deploy_slug(slug, novo_estado)
-
-    with engine.begin() as conn:
-        # 2.1) Se novo estado for ativo, desativar outro que já esteja no mesmo estado para mesma URL (slug null-aware)
-        if novo_estado in {"producao", "beta", "dev"}:
-            res = conn.execute(
-                text("""
-                    UPDATE global.aplicacoes
-                       SET estado = 'desativado'::global.estado_enum
-                     WHERE dominio = CAST(:dom AS global.dominio_enum)
-                       AND slug IS NOT DISTINCT FROM :slug
-                       AND estado  = CAST(:est AS global.estado_enum)
-                       AND id     <> :id
-                    RETURNING id
-                """),
-                {"dom": dominio, "slug": slug, "est": novo_estado, "id": body.id},
-            )
-            removidos_ids = [r[0] for r in res.fetchall()]
-
-        # 2.2) Atualizar o alvo para o novo estado e recalcular url_completa (SEM /p)
-        nova_url = _canonical_url(dominio, novo_estado, slug)
-        conn.execute(
-            text("""
-                UPDATE global.aplicacoes
-                   SET estado = CAST(:est AS global.estado_enum),
-                       url_completa = :url
-                 WHERE id = :id
-            """),
-            {"est": novo_estado, "url": nova_url, "id": body.id},
-        )
-
-    # 3) Pós-transação: acionar GitHub Actions
-
-    # 3.a) Remover deploy do(s) que foram desativados por conflito (mesmo estado/URL)
-    try:
-        if removidos_ids:
-            slug_remove = _deploy_slug(slug, novo_estado)  # '', 'slug', 'beta', 'beta/slug'
-            if slug_remove is not None:
-                GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_remove or "")
-    except Exception as e:
-        logging.getLogger("aplicacoes").warning(
-            "Falha ao remover deploy anterior (%s): %s", removidos_ids, e
-        )
-
-    # 3.b) Se o novo estado for desativado, tirar do ar o próprio alvo (usando o estado antigo)
-    if novo_estado == "desativado":
-        try:
-            if estado_path_old is not None:
-                GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=estado_path_old or "")
-        except Exception as e:
-            logging.getLogger("aplicacoes").warning(
-                "Falha ao remover deploy do alvo (id=%s): %s", body.id, e
-            )
-        return {
-            "ok": True,
-            "id": body.id,
-            "dominio": dominio,
-            "slug": slug,
-            "novo_estado": novo_estado,
-            "desativados_ids": removidos_ids,
-            "deploy": {"action": "delete", "slug_removed": estado_path_old},
-        }
-
-    # 3.c) Novo estado ativo => deploy do alvo na rota correta (SEM /p)
-    try:
-        # materializa ZIP para o workflow
-        _, zip_url = _materializar_zip(slug, body.id, arquivo_zip)
-        slug_deploy = estado_path_new  # '', 'slug', 'beta', 'beta/slug'
-        GitHubPagesDeployer().dispatch(domain=dominio, slug=slug_deploy or "", zip_url=zip_url)
-    except Exception as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Estado atualizado, mas falha ao disparar deploy do novo estado: {e}"
-        )
-
-    return {
-        "ok": True,
-        "id": body.id,
-        "dominio": dominio,
-        "slug": slug,
-        "novo_estado": novo_estado,
-        "desativados_ids": removidos_ids,
-        "deploy": {"action": "deploy", "slug_deploy": estado_path_new, "zip_url": zip_url},
     }
