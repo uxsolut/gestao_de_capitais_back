@@ -275,7 +275,7 @@ async def criar_aplicacao(
             row = conn.execute(
                 text("""
                     INSERT INTO global.aplicacoes
-                        (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado, id_empresa)
+                        (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado, id_empresa, anotacoes)
                     VALUES
                         (CAST(:dominio AS global.dominio_enum),
                          :slug,
