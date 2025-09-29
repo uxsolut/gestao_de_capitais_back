@@ -4,9 +4,11 @@ import os
 import time
 import re
 import logging
+import io  # <-- ADICIONADO
 from typing import Optional, List, Tuple
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, status
+from fastapi.responses import StreamingResponse  # <-- ADICIONADO
 from pydantic import BaseModel
 
 from sqlalchemy import text
@@ -144,6 +146,56 @@ def listar_aplicacoes_por_empresa(
         )
         for r in rows
     ]
+
+
+# =========================================================
+#                 GET /{id}/download  (NOVO)
+# =========================================================
+def _safe_filename(dominio: str, estado: Optional[str], slug: Optional[str], rec_id: int) -> str:
+    # Ex.: pinacle.com.br-producao-empresas-117.zip
+    base = f"{dominio}-{(estado or 'producao')}-{(slug or 'root')}-{rec_id}".strip("-")
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", base)
+    return f"{base}.zip"
+
+
+@router.get(
+    "/{id}/download",
+    summary="Baixa o arquivo_zip da aplicação em formato .zip",
+)
+def download_zip(
+    id: int,
+    current_user: User = Depends(get_current_user),
+):
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT
+                    id,
+                    dominio::text AS dominio,
+                    slug,
+                    estado::text AS estado,
+                    arquivo_zip
+                FROM global.aplicacoes
+                WHERE id = :id
+                LIMIT 1
+            """),
+            {"id": id},
+        ).mappings().first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Aplicação não encontrada.")
+
+    data: bytes = row["arquivo_zip"]
+    if not data:
+        raise HTTPException(status_code=404, detail="Nenhum arquivo associado a esta aplicação.")
+
+    filename = _safe_filename(row["dominio"], row["estado"], row["slug"], row["id"])
+    stream = io.BytesIO(data)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(len(data)),
+    }
+    return StreamingResponse(stream, media_type="application/zip", headers=headers)
 
 
 # =========================================================
