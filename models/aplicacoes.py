@@ -14,14 +14,27 @@ from sqlalchemy.dialects import postgresql
 
 from database import Base
 
-# Tipos ENUM já existentes no Postgres
+# ===== Enums já existentes no Postgres =====
+# (create_type=False para não tentar recriar)
+
+dominio_enum = postgresql.ENUM(
+    "pinacle.com.br",
+    "gestordecapitais.com",
+    "tetramusic.com.br",
+    name="dominio_enum",
+    schema="global",
+    create_type=False,
+    native_enum=True,
+    validate_strings=True,
+)
+
 frontback_enum = postgresql.ENUM(
     "frontend",
     "backend",
     "fullstack",
     name="frontbackenum",
     schema="gestor_capitais",
-    create_type=False,        # o tipo já existe no banco
+    create_type=False,
     native_enum=True,
     validate_strings=True,
 )
@@ -33,10 +46,21 @@ estado_enum = postgresql.ENUM(
     "desativado",
     name="estado_enum",
     schema="global",
-    create_type=False,        # o tipo já existe no banco
+    create_type=False,
     native_enum=True,
     validate_strings=True,
 )
+
+servidor_enum = postgresql.ENUM(
+    "teste 1",
+    "teste 2",
+    name="servidor_enum",
+    schema="global",
+    create_type=False,
+    native_enum=True,
+    validate_strings=True,
+)
+
 
 class Aplicacao(Base):
     __tablename__ = "aplicacoes"
@@ -47,33 +71,20 @@ class Aplicacao(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # ENUM já existente no schema global
-    dominio = Column(
-        postgresql.ENUM(
-            "pinacle.com.br",
-            "gestordecapitais.com",
-            "tetramusic.com.br",
-            name="dominio_enum",
-            schema="global",
-            create_type=False,
-            native_enum=True,
-            validate_strings=True,
-        ),
-        nullable=False,
-    )
+    # Agora todas as colunas (exceto id) permitem NULL
+    dominio = Column(dominio_enum, nullable=True)
 
-    # Agora o slug aceita NULL para homepage por domínio/estado
+    # slug pode ser NULL (homepage por domínio/estado)
     slug = Column(Text, nullable=True)
 
-    arquivo_zip = Column(LargeBinary, nullable=False)  # BYTEA
-    url_completa = Column(Text, nullable=False)
+    # BYTEA
+    arquivo_zip = Column(LargeBinary, nullable=True)
 
-    # Colunas (ENUMs)
+    url_completa = Column(Text, nullable=True)
+
+    # ENUMs
     front_ou_back = Column(frontback_enum, nullable=True)  # gestor_capitais.frontbackenum
-    estado        = Column(estado_enum,    nullable=True)  # global.estado_enum
-
-    # Coluna booleana
-    precisa_logar = Column(Boolean, nullable=False, server_default=text("false"))
+    estado = Column(estado_enum, nullable=True)            # global.estado_enum
 
     # FK para global.empresas(id) com ON DELETE SET NULL
     id_empresa = Column(
@@ -82,10 +93,25 @@ class Aplicacao(Base):
         nullable=True,
     )
 
+    # Booleana (default false), porém aceita NULL no banco atual
+    precisa_logar = Column(Boolean, nullable=True, server_default=text("false"))
+
+    # ===== Novas colunas =====
+    anotacoes = Column(Text, nullable=True)
+
+    # Arrays de texto
+    dados_de_entrada = Column(postgresql.ARRAY(Text), nullable=True)
+    tipos_de_retorno = Column(postgresql.ARRAY(Text), nullable=True)
+
+    rota = Column(Text, nullable=True)
+    porta = Column(Text, nullable=True)
+
+    servidor = Column(servidor_enum, nullable=True)  # global.servidor_enum
+
     def __repr__(self) -> str:
         return (
             f"<Aplicacao id={self.id} dominio={self.dominio} slug={self.slug} "
             f"front_ou_back={self.front_ou_back} estado={self.estado} "
-            f"precisa_logar={self.precisa_logar} "
-            f"id_empresa={self.id_empresa}>"
+            f"precisa_logar={self.precisa_logar} id_empresa={self.id_empresa} "
+            f"servidor={self.servidor}>"
         )
