@@ -4,11 +4,11 @@ import os
 import time
 import re
 import logging
-import io  # <-- ADICIONADO
+import io
 from typing import Optional, List, Tuple
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, status
-from fastapi.responses import StreamingResponse  # <-- ADICIONADO
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from sqlalchemy import text
@@ -29,20 +29,27 @@ BASE_UPLOADS_URL = os.getenv("BASE_UPLOADS_URL")  # ex.: https://gestordecapitai
 DOMINIO_ENUM = {"pinacle.com.br", "gestordecapitais.com", "tetramusic.com.br"}
 FRONTBACK_ENUM = {"frontend", "backend", "fullstack"}
 ESTADO_ENUM = {"producao", "beta", "dev", "desativado"}
-
+SERVIDOR_ENUM = {"teste 1", "teste 2"}
 
 # =========================================================
 #                  MODELS para respostas
 # =========================================================
 class AplicacaoOut(BaseModel):
     id: int
-    dominio: str
+    dominio: Optional[str] = None
     slug: Optional[str] = None
     url_completa: Optional[str] = None
     front_ou_back: Optional[str] = None
     estado: Optional[str] = None
     id_empresa: Optional[int] = None
-    precisa_logar: bool
+    precisa_logar: Optional[bool] = None
+    # ---- novos campos ----
+    anotacoes: Optional[str] = None
+    dados_de_entrada: Optional[List[str]] = None
+    tipos_de_retorno: Optional[List[str]] = None
+    rota: Optional[str] = None
+    porta: Optional[str] = None
+    servidor: Optional[str] = None
 
 
 # ======================= Helpers =======================
@@ -51,11 +58,6 @@ def _is_producao(estado: Optional[str]) -> bool:
 
 
 def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str]) -> str:
-    """
-    URL pública SEM '/p':
-    - producao:  https://dominio/  ou  https://dominio/<slug>
-    - beta/dev:  https://dominio/<estado>  ou  https://dominio/<estado>/<slug>
-    """
     base = f"https://{dominio}".rstrip("/")
     s = (slug or "").strip("/")
     if _is_producao(estado):
@@ -86,6 +88,11 @@ def _validate_inputs(dominio: Optional[str], slug: Optional[str], front_ou_back:
         raise HTTPException(status_code=400, detail="front_ou_back inválido (frontend|backend|fullstack).")
     if estado is not None and estado not in ESTADO_ENUM:
         raise HTTPException(status_code=400, detail="estado inválido (producao|beta|dev|desativado).")
+
+
+def _validate_servidor(servidor: Optional[str]):
+    if servidor is not None and servidor not in SERVIDOR_ENUM:
+        raise HTTPException(status_code=400, detail="servidor inválido (teste 1|teste 2).")
 
 
 # =========================================================
@@ -125,7 +132,14 @@ def listar_aplicacoes_por_empresa(
                     front_ou_back::text AS front_ou_back,
                     estado::text AS estado,
                     id_empresa,
-                    precisa_logar
+                    precisa_logar,
+                    -- novos campos
+                    anotacoes,
+                    dados_de_entrada,
+                    tipos_de_retorno,
+                    rota,
+                    porta,
+                    servidor::text AS servidor
                 FROM global.aplicacoes
                 WHERE id_empresa = :id_empresa
                 ORDER BY id DESC
@@ -142,17 +156,22 @@ def listar_aplicacoes_por_empresa(
             front_ou_back=r["front_ou_back"],
             estado=r["estado"],
             id_empresa=r["id_empresa"],
-            precisa_logar=bool(r["precisa_logar"]),
+            precisa_logar=None if r["precisa_logar"] is None else bool(r["precisa_logar"]),
+            anotacoes=r["anotacoes"],
+            dados_de_entrada=r["dados_de_entrada"],
+            tipos_de_retorno=r["tipos_de_retorno"],
+            rota=r["rota"],
+            porta=r["porta"],
+            servidor=r["servidor"],
         )
         for r in rows
     ]
 
 
 # =========================================================
-#                 GET /{id}/download  (NOVO)
+#                 GET /{id}/download  (já existente)
 # =========================================================
 def _safe_filename(dominio: str, estado: Optional[str], slug: Optional[str], rec_id: int) -> str:
-    # Ex.: pinacle.com.br-producao-empresas-117.zip
     base = f"{dominio}-{(estado or 'producao')}-{(slug or 'root')}-{rec_id}".strip("-")
     base = re.sub(r"[^A-Za-z0-9._-]+", "-", base)
     return f"{base}.zip"
@@ -199,24 +218,23 @@ def download_zip(
 
 
 # =========================================================
-#                       POST (criar)
+#                       POST (criar)  — EXISTENTE
 # =========================================================
 @router.post("/criar", status_code=status.HTTP_201_CREATED)
 async def criar_aplicacao(
     dominio: str = Form(...),
-    slug: Optional[str] = Form(None),                 # agora opcional
+    slug: Optional[str] = Form(None),
     arquivo_zip: UploadFile = File(...),
     front_ou_back: str | None = Form(None),
     estado: str | None = Form(None),
     id_empresa: int | None = Form(None),
 ):
-    # 1) normalizar + validar
-    slug = _normalize_slug(slug)                      # '' -> None
+    # (… INALTERADO …)
+    slug = _normalize_slug(slug)
     front_ou_back = _normalize_slug(front_ou_back)
     estado = _normalize_slug(estado)
     _validate_inputs(dominio, slug, front_ou_back, estado)
 
-    # 2) salvar ZIP em pasta pública
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
@@ -230,11 +248,8 @@ async def criar_aplicacao(
         f.write(data)
 
     zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
-
-    # 3) calcular URL final (SEM /p)
     url_full = _canonical_url(dominio, estado, slug)
 
-    # 4) desativar conflitantes (se ativo) e inserir nova linha
     db_saved = False
     db_error = None
     new_id: Optional[int] = None
@@ -294,7 +309,6 @@ async def criar_aplicacao(
             "Falha ao inserir/substituir em global.aplicacoes: %s", db_error
         )
 
-    # 5) deploy conforme estado
     try:
         if removidos_ids:
             slug_remove = _deploy_slug(slug, estado)
@@ -330,18 +344,16 @@ async def criar_aplicacao(
 
 
 # =========================================================
-#                PUT ÚNICO (editar geral)
+#                PUT ÚNICO (editar geral) — INALTERADO
 # =========================================================
 class EditarAplicacaoBody(BaseModel):
     id: int
-    # Campos que podem mexer no deploy
-    dominio: Optional[str] = None                  # global.dominio_enum
-    slug: Optional[str] = None                     # [a-z0-9-]{1,64} ou None
-    estado: Optional[str] = None                   # global.estado_enum
-    # Campos só de banco (NÃO disparam deploy)
-    front_ou_back: Optional[str] = None            # gestor_capitais.frontbackenum
-    id_empresa: Optional[int] = None               # FK empresas.id
-    precisa_logar: Optional[bool] = None           # boolean
+    dominio: Optional[str] = None
+    slug: Optional[str] = None
+    estado: Optional[str] = None
+    front_ou_back: Optional[str] = None
+    id_empresa: Optional[int] = None
+    precisa_logar: Optional[bool] = None
 
 
 @router.put(
@@ -349,7 +361,7 @@ class EditarAplicacaoBody(BaseModel):
     summary="Editar aplicação (PUT unificado). Sempre atualiza o banco; deploy SEMPRE se novo estado for ativo; delete quando mudar para desativado.",
 )
 def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get_current_user)):
-    # 1) Ler registro atual
+    # (… INALTERADO …)
     with engine.begin() as conn:
         row = conn.execute(
             text("""
@@ -368,7 +380,6 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
             """),
             {"id": body.id},
         ).mappings().first()
-
     if not row:
         raise HTTPException(status_code=404, detail="Registro não encontrado.")
 
@@ -380,7 +391,6 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     old_precisa_logar = row["precisa_logar"]
     old_zip           = row["arquivo_zip"]
 
-    # 2) Normalizar/validar entradas
     new_slug = old_slug if body.slug is None else _normalize_slug(body.slug)
     new_dominio    = old_dominio if body.dominio is None else body.dominio
     new_estado     = old_estado  if body.estado  is None else body.estado
@@ -396,12 +406,10 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     old_path = _deploy_slug(old_slug, old_estado)
     new_path = _deploy_slug(new_slug, new_estado)
 
-    # 3) Transação de atualização + resolução de conflitos se novo estado for ativo
     removidos_ids: List[int] = []
 
     with engine.begin() as conn:
         if new_path_active:
-            # garantir exclusividade mesmo que nada tenha mudado
             res = conn.execute(
                 text("""
                     UPDATE global.aplicacoes
@@ -416,7 +424,6 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
             )
             removidos_ids = [r[0] for r in res.fetchall()]
 
-        # Atualiza sempre
         nova_url = _canonical_url(new_dominio, new_estado, new_slug)
         conn.execute(
             text("""
@@ -442,15 +449,11 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
             },
         )
 
-    # 4) Regras de deploy com o novo comportamento
     try:
-        # 4.1) Se novo estado é ATIVO -> sempre (re)deployer
         if new_path_active:
-            # Se o caminho antigo é diferente, remover o antigo antes
             if old_path_active and old_path and (old_path != new_path):
                 GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
 
-            # materializa ZIP do banco para o workflow
             if not BASE_UPLOADS_URL:
                 raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
             ts = int(time.time())
@@ -461,17 +464,12 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
                 f.write(old_zip)
             zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
 
-            # se houve conflitos desativados com mesmo path, garantir limpeza prévia
             if removidos_ids and new_path is not None:
                 GitHubPagesDeployer().dispatch_delete(domain=new_dominio, slug=new_path or "")
 
             GitHubPagesDeployer().dispatch(domain=new_dominio, slug=new_path or "", zip_url=zip_url)
-
-        # 4.2) Se mudou PARA desativado -> só delete (quando aplicável)
         elif (not new_path_active) and old_path_active and (new_estado == "desativado") and (old_path is not None):
             GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
-
-        # 4.3) Se continua desativado sem mudança -> nada de deploy
     except HTTPException:
         raise
     except Exception as e:
@@ -494,9 +492,9 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     }
 
 
-# ======================= DELETE (por id) =======================
+# ======================= DELETE (por id) — INALTERADO =======================
 class DeleteBody(BaseModel):
-    id: int  # deletar por ID, simples
+    id: int
 
 
 @router.delete(
@@ -505,7 +503,6 @@ class DeleteBody(BaseModel):
     description="Remove o deploy (se estiver no ar) e apaga o registro pelo id.",
 )
 def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current_user)):
-    # 1) Buscar o registro pelo id
     with engine.begin() as conn:
         row = conn.execute(
             text("""
@@ -524,19 +521,17 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
         raise HTTPException(status_code=404, detail="Registro não encontrado.")
 
     dominio = row["dominio"]
-    slug = row["slug"]           # pode ser None
-    estado = row["estado"]       # pode ser None
+    slug = row["slug"]
+    estado = row["estado"]
 
-    # 2) Se estava publicado (producao/beta/dev), remover do GitHub no caminho correto
     slug_path: Optional[str] = None
     try:
-        slug_path = _deploy_slug(slug, estado)  # '', 'slug', 'beta', 'beta/slug' | None
+        slug_path = _deploy_slug(slug, estado)
         if slug_path is not None:
             GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_path or "")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Falha ao disparar delete no GitHub: {e}")
 
-    # 3) Apagar do banco pelo id
     try:
         with engine.begin() as conn:
             res = conn.execute(
@@ -556,3 +551,80 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
         "github_action": {"workflow": "delete-landing", "slug_removed": slug_path},
         "apagado_no_banco": apagado_no_banco,
     }
+
+
+# =========================================================
+#         NOVO POST: criar apenas os "detalhes" extras
+# =========================================================
+@router.post(
+    "/criar-backend",
+    status_code=status.HTTP_201_CREATED,
+    summary="Cria um registro só com os campos de backend (arquivo + metadados). Não afeta deploy.",
+)
+async def criar_aplicacao_backend(
+    # arquivo opcional; se enviado, salva no BYTEA
+    arquivo: Optional[UploadFile] = File(None, description="Arquivo ZIP opcional (salvo em BYTEA)"),
+    front_ou_back: Optional[str] = Form(None, description="frontend|backend|fullstack"),
+    precisa_logar: Optional[bool] = Form(None, description="Se true, requer autenticação"),
+    anotacoes: Optional[str] = Form(None),
+    dados_de_entrada: Optional[List[str]] = Form(None),
+    tipos_de_retorno: Optional[List[str]] = Form(None),
+    rota: Optional[str] = Form(None),
+    porta: Optional[str] = Form(None),
+    servidor: Optional[str] = Form(None, description="teste 1|teste 2"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Insere um registro na tabela `global.aplicacoes` preenchendo **apenas** os campos
+    solicitados. Demais colunas permanecem NULL. **Não dispara deploy**.
+    """
+    # valida enum(s)
+    if front_ou_back is not None and front_ou_back not in FRONTBACK_ENUM:
+        raise HTTPException(status_code=400, detail="front_ou_back inválido (frontend|backend|fullstack).")
+    _validate_servidor(servidor)
+
+    # lê arquivo se houver
+    data = None
+    if arquivo is not None:
+        data = await arquivo.read()
+
+    # insert simples (sem domínio/estado/slug/url)
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                INSERT INTO global.aplicacoes
+                    (arquivo_zip,
+                     front_ou_back,
+                     precisa_logar,
+                     anotacoes,
+                     dados_de_entrada,
+                     tipos_de_retorno,
+                     rota,
+                     porta,
+                     servidor)
+                VALUES
+                    (:arquivo_zip,
+                     CAST(NULLIF(:fb, '') AS gestor_capitais.frontbackenum),
+                     :precisa_logar,
+                     :anotacoes,
+                     CAST(:dados_de_entrada AS text[]),
+                     CAST(:tipos_de_retorno AS text[]),
+                     :rota,
+                     :porta,
+                     CAST(NULLIF(:servidor, '') AS global.servidor_enum))
+                RETURNING id
+            """),
+            {
+                "arquivo_zip": data,
+                "fb": front_ou_back or "",
+                "precisa_logar": precisa_logar,
+                "anotacoes": anotacoes,
+                "dados_de_entrada": dados_de_entrada,
+                "tipos_de_retorno": tipos_de_retorno,
+                "rota": rota,
+                "porta": porta,
+                "servidor": servidor or "",
+            },
+        ).mappings().first()
+
+    return {"ok": True, "id": int(row["id"])}
