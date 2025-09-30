@@ -5,7 +5,7 @@ import time
 import re
 import logging
 import io
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, status
 from fastapi.responses import StreamingResponse
@@ -347,24 +347,23 @@ async def criar_aplicacao(
 
 
 # =========================================================
-#                PUT ÚNICO (editar geral) — INALTERADO
+#                PUT ÚNICO (editar geral) — ATUALIZADO
 # =========================================================
 class EditarAplicacaoBody(BaseModel):
     id: int
     dominio: Optional[str] = None
     slug: Optional[str] = None
     estado: Optional[str] = None
-    front_ou_back: Optional[str] = None
+    # ❌ front_ou_back REMOVIDO (não pode mais ser alterado)
     id_empresa: Optional[int] = None
     precisa_logar: Optional[bool] = None
 
 
 @router.put(
     "/editar",
-    summary="Editar aplicação (PUT unificado). Sempre atualiza o banco; deploy SEMPRE se novo estado for ativo; delete quando mudar para desativado.",
+    summary="Editar aplicação (PUT unificado). Não permite alterar 'front_ou_back'. Deploy segue as regras atuais.",
 )
 def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get_current_user)):
-    # (… INALTERADO …)
     with engine.begin() as conn:
         row = conn.execute(
             text("""
@@ -397,7 +396,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     new_slug = old_slug if body.slug is None else _normalize_slug(body.slug)
     new_dominio    = old_dominio if body.dominio is None else body.dominio
     new_estado     = old_estado  if body.estado  is None else body.estado
-    new_frontback  = old_frontback if body.front_ou_back is None else body.front_ou_back
+    new_frontback  = old_frontback  # ❗ permanece inalterado
     new_id_empresa = old_id_empresa if body.id_empresa is None else body.id_empresa
     new_precisa    = old_precisa_logar if body.precisa_logar is None else body.precisa_logar
 
@@ -434,7 +433,6 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
                    SET dominio       = CAST(:dominio AS global.dominio_enum),
                        slug          = :slug,
                        estado        = CAST(:estado AS global.estado_enum),
-                       front_ou_back = CAST(NULLIF(:fb, '') AS gestor_capitais.frontbackenum),
                        id_empresa    = :id_empresa,
                        precisa_logar = :precisa_logar,
                        url_completa  = :url
@@ -444,7 +442,6 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
                 "dominio": new_dominio,
                 "slug": new_slug,
                 "estado": new_estado,
-                "fb": new_frontback or "",
                 "id_empresa": new_id_empresa,
                 "precisa_logar": new_precisa,
                 "url": nova_url,
@@ -631,3 +628,72 @@ async def criar_aplicacao_backend(
         ).mappings().first()
 
     return {"ok": True, "id": int(row["id"])}
+
+
+# =========================================================
+#        NOVO PUT: editar apenas campos TÉCNICOS (parcial)
+# =========================================================
+class EditarAplicacaoTecnicoBody(BaseModel):
+    id: int
+    rota: Optional[str] = None
+    porta: Optional[str] = None
+    servidor: Optional[str] = None  # global.servidor_enum
+    dados_de_entrada: Optional[List[str]] = None
+    tipos_de_retorno: Optional[List[str]] = None
+    anotacoes: Optional[str] = None
+    precisa_logar: Optional[bool] = None
+
+
+@router.put(
+    "/editar_tecnico",
+    summary="Editar campos técnicos (rota, porta, servidor, dados_de_entrada, tipos_de_retorno, anotacoes, precisa_logar).",
+)
+def editar_aplicacao_tecnico(
+    body: EditarAplicacaoTecnicoBody,
+    current_user: User = Depends(get_current_user),
+):
+    # Garante que existe
+    with engine.begin() as conn:
+        existe = conn.execute(
+            text("SELECT 1 FROM global.aplicacoes WHERE id = :id LIMIT 1"),
+            {"id": body.id},
+        ).scalar()
+    if not existe:
+        raise HTTPException(status_code=404, detail="Registro não encontrado.")
+
+    payload = body.model_dump(exclude_unset=True)
+    # valida enum quando presente
+    if "servidor" in payload:
+        _validate_servidor(payload.get("servidor"))
+
+    sets: List[str] = []
+    params: Dict[str, Any] = {"id": body.id}
+
+    def _add(col: str, expr: str, param_name: str):
+        sets.append(f"{col} = {expr}")
+        # None é aceito para limpar
+        params[param_name] = payload.get(param_name)
+
+    if "rota" in payload:
+        _add("rota", ":rota", "rota")
+    if "porta" in payload:
+        _add("porta", ":porta", "porta")
+    if "servidor" in payload:
+        _add("servidor", "CAST(NULLIF(:servidor, '') AS global.servidor_enum)", "servidor")
+    if "dados_de_entrada" in payload:
+        _add("dados_de_entrada", "CAST(:dados_de_entrada AS text[])", "dados_de_entrada")
+    if "tipos_de_retorno" in payload:
+        _add("tipos_de_retorno", "CAST(:tipos_de_retorno AS text[])", "tipos_de_retorno")
+    if "anotacoes" in payload:
+        _add("anotacoes", ":anotacoes", "anotacoes")
+    if "precisa_logar" in payload:
+        _add("precisa_logar", ":precisa_logar", "precisa_logar")
+
+    if not sets:
+        return {"ok": True, "id": body.id, "atualizado": False, "campos": []}
+
+    sql = f"UPDATE global.aplicacoes SET {', '.join(sets)} WHERE id = :id"
+    with engine.begin() as conn:
+        conn.execute(text(sql), params)
+
+    return {"ok": True, "id": body.id, "atualizado": True, "campos": list(payload.keys())}
