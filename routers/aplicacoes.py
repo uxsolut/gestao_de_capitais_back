@@ -101,7 +101,7 @@ def _validate_servidor(servidor: Optional[str]):
 @router.get(
     "/por-empresa",
     response_model=List[AplicacaoOut],
-    summary="Lista aplicações por id_empresa (requer autenticação)",
+    summary="Lista aplicações por id_empresa + globais (requer autenticação)",
 )
 def listar_aplicacoes_por_empresa(
     id_empresa: int = Query(..., gt=0, description="ID da empresa dona das aplicações"),
@@ -109,9 +109,10 @@ def listar_aplicacoes_por_empresa(
 ):
     """
     - Requer autenticação (JWT), mas **não** valida propriedade da empresa.
-    - Retorna registros de `global.aplicacoes` com esse `id_empresa`.
+    - Retorna registros de `global.aplicacoes` vinculados ao `id_empresa` **ou** sem empresa (`id_empresa IS NULL`).
     - Não retorna o bytea (`arquivo_zip`).
     """
+    # Confere existência da empresa
     with engine.begin() as conn:
         existe = conn.execute(
             text("SELECT 1 FROM global.empresas WHERE id = :id LIMIT 1"),
@@ -121,6 +122,7 @@ def listar_aplicacoes_por_empresa(
     if not existe:
         raise HTTPException(status_code=404, detail="Empresa não encontrada.")
 
+    # Busca: da empresa OU globais (id_empresa IS NULL)
     with engine.begin() as conn:
         rows = conn.execute(
             text("""
@@ -133,7 +135,6 @@ def listar_aplicacoes_por_empresa(
                     estado::text AS estado,
                     id_empresa,
                     precisa_logar,
-                    -- novos campos
                     anotacoes,
                     dados_de_entrada,
                     tipos_de_retorno,
@@ -142,7 +143,10 @@ def listar_aplicacoes_por_empresa(
                     servidor::text AS servidor
                 FROM global.aplicacoes
                 WHERE id_empresa = :id_empresa
-                ORDER BY id DESC
+                   OR id_empresa IS NULL
+                ORDER BY
+                    CASE WHEN id_empresa = :id_empresa THEN 0 ELSE 1 END,
+                    id DESC
             """),
             {"id_empresa": id_empresa},
         ).mappings().all()
@@ -166,7 +170,6 @@ def listar_aplicacoes_por_empresa(
         )
         for r in rows
     ]
-
 
 # =========================================================
 #                 GET /{id}/download  (já existente)
