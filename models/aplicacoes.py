@@ -61,6 +61,22 @@ servidor_enum = postgresql.ENUM(
     validate_strings=True,
 )
 
+# ===== Novo ENUM: tipo_api_enum (global) =====
+tipo_api_enum = postgresql.ENUM(
+    "get",
+    "post",
+    "put",
+    "delete",
+    "cron_job",
+    "webhook",
+    "websocket",
+    name="tipo_api_enum",
+    schema="global",
+    create_type=False,
+    native_enum=True,
+    validate_strings=True,
+)
+
 
 class Aplicacao(Base):
     __tablename__ = "aplicacoes"
@@ -108,10 +124,13 @@ class Aplicacao(Base):
 
     servidor = Column(servidor_enum, nullable=True)  # global.servidor_enum
 
+    # Novo campo ENUM com o tipo criado acima
+    tipo_api = Column(tipo_api_enum, nullable=True)  # global.tipo_api_enum
+
     def __repr__(self) -> str:
         return (
             f"<Aplicacao id={self.id} dominio={self.dominio} slug={self.slug} "
             f"front_ou_back={self.front_ou_back} estado={self.estado} "
             f"precisa_logar={self.precisa_logar} id_empresa={self.id_empresa} "
-            f"servidor={self.servidor}>"
+            f"servidor={self.servidor} tipo_api={self.tipo_api}>"
         )
