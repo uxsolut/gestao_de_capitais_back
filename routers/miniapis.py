@@ -1,6 +1,6 @@
 # routers/miniapis.py
 # -*- coding: utf-8 -*-
-import os, io, zipfile, shutil, socket, subprocess
+import os, io, zipfile, shutil, socket, subprocess, json
 from datetime import datetime
 from typing import Optional, List
 
@@ -20,6 +20,9 @@ DEPLOY_BIN = os.getenv("MINIAPIS_DEPLOY_BIN", "/usr/local/bin/miniapi-deploy.sh"
 RUNUSER = os.getenv("MINIAPIS_RUNUSER", "app")
 PORT_START = int(os.getenv("MINIAPIS_PORT_START", "9200"))
 PORT_END   = int(os.getenv("MINIAPIS_PORT_END",   "9699"))
+
+# domínio fixo para publicação (ex.: pinacle.com.br ou o IP mostrado na imagem)
+FIXED_DEPLOY_DOMAIN = os.getenv("FIXED_DEPLOY_DOMAIN", "pinacle.com.br")
 
 def _ensure_dirs():
     os.makedirs(BASE_DIR, exist_ok=True)
@@ -60,125 +63,146 @@ def _venv_install(app_dir: str):
     else:
         subprocess.run([pip, "install", "fastapi", "uvicorn"], check=True)
 
-def _deploy_root(id_: int, port: int, route: str, workdir_app: str):
-    subprocess.run(["sudo", DEPLOY_BIN, str(id_), str(port), route, workdir_app, RUNUSER], check=True)
+def _deploy_root(id_: int, port: int, route_with_tipo: str, workdir_app: str):
+    """
+    Mantemos seu script de deploy. Agora passamos a rota já COM tipo_api (ex.: /123/get)
+    para o Nginx publicar exatamente nesse prefixo.
+    """
+    subprocess.run(["sudo", DEPLOY_BIN, str(id_), str(port), route_with_tipo, workdir_app, RUNUSER], check=True)
 
 class MiniApiOut(BaseModel):
     id: int
-    rota: str
+    dominio: str
+    rota: str                # ex.: "/123"
+    tipo_api: str            # get|post|put|delete|cron_job|webhook|websocket
     porta: int
     servidor: str
     precisa_logar: bool
     url_completa: Optional[str] = None
 
-def _insert_backend_row(
-    dominio: Optional[str],
-    rota: str,
-    porta: int,
-    servidor: str,
+def _insert_backend_row_initial(
+    dominio: str,
+    front_ou_back: Optional[str],
+    id_empresa: Optional[int],
     precisa_logar: bool,
-    dados_de_entrada: List[str],
-    tipos_de_retorno: List[str],
-    anotacoes: str,
-    arquivo_zip_bytes: Optional[bytes],
-    url_completa: Optional[str],
+    anotacoes: Optional[str],
+    dados_de_entrada: Optional[List[str]],
+    tipos_de_retorno: Optional[List[str]],
+    servidor: Optional[str],
+    tipo_api: str,
+    arquivo_zip_bytes: bytes,
 ) -> int:
-    with engine.connect() as conn:
+    """
+    Primeiro insert: ainda sem rota/porta/url (pois dependem do ID e da porta alocada).
+    Já gravamos tipo_api (ENUM).
+    """
+    with engine.begin() as conn:
         res = conn.execute(text("""
             INSERT INTO global.aplicacoes
               (front_ou_back, dominio, slug, arquivo_zip, url_completa,
                estado, id_empresa, precisa_logar, anotacoes,
                dados_de_entrada, tipos_de_retorno,
-               rota, porta, servidor)
+               rota, porta, servidor, tipo_api)
             VALUES
-              ('backend', :dominio, NULL, :arquivo_zip, :url_completa,
-               NULL, NULL, :precisa_logar, :anotacoes,
+              (:front_ou_back, :dominio, NULL, :arquivo_zip, NULL,
+               NULL, :id_empresa, :precisa_logar, :anotacoes,
                :dados, :tipos,
-               :rota, :porta, :servidor)
+               NULL, NULL, :servidor, :tipo_api::global.tipo_api_enum)
             RETURNING id
         """), {
+            "front_ou_back": front_ou_back or "backend",
             "dominio": dominio,
             "arquivo_zip": arquivo_zip_bytes,
-            "url_completa": url_completa,
+            "id_empresa": id_empresa,
             "precisa_logar": precisa_logar,
-            "anotacoes": anotacoes,
+            "anotacoes": (anotacoes or ""),
             "dados": dados_de_entrada,
             "tipos": tipos_de_retorno,
-            "rota": rota,
-            "porta": porta,
             "servidor": servidor,
+            "tipo_api": tipo_api,
         })
-        new_id = res.scalar_one()
-        conn.commit()
-        return new_id
+        return res.scalar_one()
 
-def _update_url_completa(id_: int, url: Optional[str]):
-    with engine.connect() as conn:
-        conn.execute(text("UPDATE global.aplicacoes SET url_completa=:u WHERE id=:i"),
-                     {"u": url, "i": id_})
-        conn.commit()
+def _update_after_deploy(id_: int, rota: str, porta: int, url: str):
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE global.aplicacoes
+               SET rota=:rota, porta=:porta, url_completa=:url
+             WHERE id=:id
+        """), {"rota": rota, "porta": str(porta), "url": url, "id": id_})
 
 @router.post("/", response_model=MiniApiOut, status_code=status.HTTP_201_CREATED,
              summary="Criar mini-backend (ZIP) e publicar")
 def criar_miniapi(
     arquivo: UploadFile = File(..., description="ZIP com app/main.py (+requirements.txt)"),
-    rota_base: str = Form(..., description="Ex.: /legal"),
-    porta: Optional[int] = Form(None, description="Se vazio, auto (9200-9699)"),
-    servidor: str = Form("default"),
+    # ==== novos campos vindos do frontend ====
+    front_ou_back: Optional[str] = Form(None),     # frontend|backend|fullstack
+    id_empresa: Optional[int] = Form(None),
     precisa_logar: bool = Form(False),
-    dominio: Optional[str] = Form(None, description="Opcional: pinacle.com.br"),
-    dados_entrada: Optional[str] = Form(None, description="CSV"),
-    tipos_retorno: Optional[str] = Form(None, description="CSV"),
     anotacoes: Optional[str] = Form(None),
+    dados_de_entrada: Optional[str] = Form(None, description="JSON array (ex.: [\"foo\",\"bar\"])"),
+    tipos_de_retorno: Optional[str] = Form(None, description="JSON array"),
+    servidor: Optional[str] = Form(None),          # ENUM existente: "teste 1" | "teste 2" | ...
+    tipo_api: str = Form(..., description="get|post|put|delete|cron_job|webhook|websocket"),
+    # ==== opcional: ainda pode forçar porta, senão aloca automática ====
+    porta: Optional[int] = Form(None),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Fluxo:
+      1) INSERT inicial em global.aplicacoes (dominio fixo; rota/porta/url NULL; tipo_api preenchido).
+      2) Gera ID -> define rota = f"/{id}".
+      3) Escolhe porta (auto se não vier).
+      4) Extrai release, prepara venv, e chama deploy (Nginx + systemd) em /<id>/<tipo_api>/.
+      5) UPDATE em global.aplicacoes com rota, porta e url_completa = https://<dominio>/<id>/<tipo_api>.
+    """
     _ensure_dirs()
 
-    rota_base = "/" + rota_base.strip().lstrip("/").rstrip("/")
-    if porta is None:
-        porta = _find_free_port()
+    # Parse das listas (JSON, se vierem)
+    dados_list = json.loads(dados_de_entrada) if dados_de_entrada else None
+    tipos_list = json.loads(tipos_de_retorno) if tipos_de_retorno else None
 
-    # listas informativas
-    dados_list = [s.strip() for s in (dados_entrada or "").split(",") if s.strip()]
-    tipos_list = [s.strip() for s in (tipos_retorno or "").split(",") if s.strip()]
-
-    # salva ZIP no disco para o runtime
+    # Lê arquivo (mantemos também em bytea conforme seu fluxo)
     rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))
-    zip_path = os.path.join(rel_dir, "src.zip")
     os.makedirs(rel_dir, exist_ok=True)
+    zip_path = os.path.join(rel_dir, "src.zip")
     zip_bytes = arquivo.file.read()
     _write_bytes(zip_path, zip_bytes)
 
-    # descompacta release definitivo por ID (depois do insert)
-    # (montamos um url_completa se tiver dominio)
-    url_comp = f"https://{dominio}{rota_base}/" if dominio else None
-
-    # cria linha NA SUA TABELA (sem status extra)
-    new_id = _insert_backend_row(
-        dominio=dominio,
-        rota=rota_base,
-        porta=porta,
-        servidor=servidor,
+    # 1) Insert inicial
+    new_id = _insert_backend_row_initial(
+        dominio=FIXED_DEPLOY_DOMAIN,
+        front_ou_back=front_ou_back,
+        id_empresa=id_empresa,
         precisa_logar=precisa_logar,
+        anotacoes=anotacoes,
         dados_de_entrada=dados_list,
         tipos_de_retorno=tipos_list,
-        anotacoes=anotacoes or "",
-        arquivo_zip_bytes=zip_bytes,      # se preferir, troque por NULL para não ocupar DB
-        url_completa=url_comp,
+        servidor=servidor,
+        tipo_api=tipo_api,
+        arquivo_zip_bytes=zip_bytes,
     )
 
-    # paths definitivos agora que temos o id
+    # 2) Rota (no DB: apenas "/<id>")
+    rota_db = f"/{new_id}"
+    # Rota que será publicada no Nginx (inclui tipo_api)
+    rota_publica = f"/{new_id}/{tipo_api}"
+
+    # 3) Porta
+    if porta is None:
+        porta = _find_free_port()
+
+    # 4) Extrai release definitivo e prepara app
     obj_dir = os.path.join(BASE_DIR, str(new_id))
     release_dir = os.path.join(obj_dir, "releases", datetime.utcnow().strftime("%Y%m%d-%H%M%S"))
     cur_link = os.path.join(obj_dir, "current")
     app_dir = os.path.join(release_dir, "app")
     os.makedirs(release_dir, exist_ok=True)
 
-    # mover o zip temporário e extrair
     shutil.move(zip_path, os.path.join(release_dir, "src.zip"))
     _unzip_to(os.path.join(release_dir, "src.zip"), release_dir)
 
-    # garantir app/main.py (ou tentar mover se veio "reto")
+    # Garantir app/main.py (como você já usava)
     main_py = os.path.join(app_dir, "main.py")
     maybe_main = os.path.join(release_dir, "main.py")
     if not os.path.exists(main_py):
@@ -188,7 +212,6 @@ def criar_miniapi(
         else:
             raise HTTPException(400, "ZIP inválido: esperado app/main.py")
 
-    # link current -> release
     _symlink_force(cur_link, release_dir)
 
     # venv + deps
@@ -197,21 +220,23 @@ def criar_miniapi(
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha ao instalar dependências: {e}")
 
-    # deploy (systemd + nginx include)
+    # deploy (systemd + nginx include) – agora com a rota incluindo tipo_api
     try:
-        _deploy_root(new_id, porta, rota_base, os.path.join(cur_link, "app"))
+        _deploy_root(new_id, porta, rota_publica, os.path.join(cur_link, "app"))
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
 
-    # opcional: atualizar url_completa se só agora você definiu domínio
-    if url_comp:
-        _update_url_completa(new_id, url_comp)
+    # 5) Atualiza url completa e campos dinâmicos
+    url_comp = f"https://{FIXED_DEPLOY_DOMAIN}{rota_publica}"
+    _update_after_deploy(new_id, rota_db, porta, url_comp)
 
     return MiniApiOut(
         id=new_id,
-        rota=rota_base,
+        dominio=FIXED_DEPLOY_DOMAIN,
+        rota=rota_db,                 # "/<id>"
+        tipo_api=tipo_api,            # ENUM
         porta=porta,
-        servidor=servidor,
+        servidor=servidor or "default",
         precisa_logar=precisa_logar,
         url_completa=url_comp,
     )
