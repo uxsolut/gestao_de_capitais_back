@@ -45,6 +45,7 @@ from routers import tipo_de_ordem as r_tipo_de_ordem
 from routers import ativos as r_ativos
 from routers import analises as r_analises
 from routers import empresas as r_empresas   # <-- ADICIONADO
+from routers.miniapis import router as miniapis_router  # <-- ADICIONADO (backend)
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -125,6 +126,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(cliente_contas.router)
         # router de Aplicações (mantive a tag coerente)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
+        app.include_router(miniapis_router)  # <-- ADICIONADO (expõe /miniapis/...)
         app.include_router(r_empresas.router, tags=["Empresas"])   # <-- ADICIONADO
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
@@ -140,6 +142,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
+        app.include_router(miniapis_router)  # <-- ADICIONADO (expõe /miniapis/...)
         app.include_router(r_empresas.router, tags=["Empresas"])   # <-- ADICIONADO
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
