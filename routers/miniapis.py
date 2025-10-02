@@ -139,7 +139,7 @@ def _insert_backend_row_initial(
               (:front_ou_back, :dominio, NULL, :arquivo_zip, NULL,
                NULL, :id_empresa, :precisa_logar, :anotacoes,
                :dados, :tipos,
-               NULL, NULL, :servidor, :tipo_api::global.tipo_api_enum)
+               NULL, NULL, :servidor, CAST(:tipo_api AS "global".tipo_api_enum))
             RETURNING id
         """), {
             "front_ou_back": front_ou_back or "backend",
@@ -151,7 +151,7 @@ def _insert_backend_row_initial(
             "dados": dados_de_entrada,
             "tipos": tipos_de_retorno,
             "servidor": servidor,
-            "tipo_api": tipo_api,
+            "tipo_api": tipo_api,   # ex.: "get"
         })
         return res.scalar_one()
 
