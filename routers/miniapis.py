@@ -114,7 +114,7 @@ def _parse_list_field_loose(value: Optional[str]) -> Tuple[Optional[List[str]], 
     return None, f"[INPUT_BRUTO_NAO_ESTRUTURADO: {raw}]"
 
 def _insert_backend_row_initial(
-    dominio: Optional[str],  # agora pode ser None para evitar conflito com enum
+    dominio: Optional[str],  # pode ser None para evitar conflito com enum
     front_ou_back: Optional[str],
     id_empresa: Optional[int],
     precisa_logar: bool,
@@ -140,11 +140,11 @@ def _insert_backend_row_initial(
               (:front_ou_back, :dominio, NULL, :arquivo_zip, NULL,
                NULL, :id_empresa, :precisa_logar, :anotacoes,
                :dados, :tipos,
-               NULL, NULL, :servidor, CAST(:tipo_api AS "gestor_capitais".tipo_api_enum))
+               NULL, NULL, :servidor, CAST(:tipo_api AS "global".tipo_api_enum))
             RETURNING id
         """), {
             "front_ou_back": front_ou_back or "backend",
-            "dominio": dominio,  # passe None se o enum não tiver o IP
+            "dominio": dominio,
             "arquivo_zip": arquivo_zip_bytes,
             "id_empresa": id_empresa,
             "precisa_logar": precisa_logar,
@@ -183,7 +183,7 @@ def criar_miniapi(
 ):
     """
     Fluxo:
-      1) INSERT inicial em global.aplicacoes (dominio NULL p/ evitar enum; rota/porta/url NULL; tipo_api preenchido).
+      1) INSERT inicial em global.aplicacoes (dominio NULL; rota/porta/url NULL; tipo_api preenchido).
       2) Gera ID -> define rota = f"/{id}".
       3) Escolhe porta (auto se não vier).
       4) Extrai release, prepara venv, e chama deploy (Nginx + systemd) em /<id>/<tipo_api>/.
@@ -191,7 +191,7 @@ def criar_miniapi(
     """
     _ensure_dirs()
 
-    # Interpretação TOLERANTE: não quebra por input ruim
+    # Interpretação TOLERANTE
     dados_list, dados_raw_note = _parse_list_field_loose(dados_de_entrada)
     tipos_list, tipos_raw_note = _parse_list_field_loose(tipos_de_retorno)
 
@@ -200,7 +200,7 @@ def criar_miniapi(
     if extras:
         anotacoes_final = (anotacoes_final + " " + extras).strip()
 
-    # Lê arquivo (mantemos também em bytea conforme seu fluxo)
+    # Lê arquivo
     rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))
     os.makedirs(rel_dir, exist_ok=True)
     zip_path = os.path.join(rel_dir, "src.zip")
@@ -209,7 +209,7 @@ def criar_miniapi(
 
     # 1) Insert inicial
     new_id = _insert_backend_row_initial(
-        dominio=None,  # <<< use None para não esbarrar no enum (ou troque para FIXED_DEPLOY_DOMAIN se o enum aceitar)
+        dominio=None,  # troque para FIXED_DEPLOY_DOMAIN se o enum aceitar o valor
         front_ou_back=front_ou_back,
         id_empresa=id_empresa,
         precisa_logar=precisa_logar,
@@ -270,7 +270,7 @@ def criar_miniapi(
 
     return MiniApiOut(
         id=new_id,
-        dominio=FIXED_DEPLOY_DOMAIN,   # devolvemos o host público que está sendo usado
+        dominio=FIXED_DEPLOY_DOMAIN,   # devolvemos o host público usado
         rota=rota_db,
         tipo_api=tipo_api,
         porta=porta,
