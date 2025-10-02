@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import os, io, zipfile, shutil, socket, subprocess, json
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -21,7 +21,7 @@ RUNUSER = os.getenv("MINIAPIS_RUNUSER", "app")
 PORT_START = int(os.getenv("MINIAPIS_PORT_START", "9200"))
 PORT_END   = int(os.getenv("MINIAPIS_PORT_END",   "9699"))
 
-# domínio fixo para publicação (ex.: pinacle.com.br ou o IP mostrado na imagem)
+# domínio fixo para publicação (ex.: pinacle.com.br ou IP)
 FIXED_DEPLOY_DOMAIN = os.getenv("FIXED_DEPLOY_DOMAIN", "pinacle.com.br")
 
 def _ensure_dirs():
@@ -65,7 +65,7 @@ def _venv_install(app_dir: str):
 
 def _deploy_root(id_: int, port: int, route_with_tipo: str, workdir_app: str):
     """
-    Mantemos seu script de deploy. Agora passamos a rota já COM tipo_api (ex.: /123/get)
+    Mantemos seu script de deploy. Passamos a rota COM tipo_api (ex.: /123/get)
     para o Nginx publicar exatamente nesse prefixo.
     """
     subprocess.run(["sudo", DEPLOY_BIN, str(id_), str(port), route_with_tipo, workdir_app, RUNUSER], check=True)
@@ -79,6 +79,38 @@ class MiniApiOut(BaseModel):
     servidor: str
     precisa_logar: bool
     url_completa: Optional[str] = None
+
+# ---------- Parser tolerante (JSON/CSV/qualquer-coisa) ----------
+def _parse_list_field_loose(value: Optional[str]) -> Tuple[Optional[List[str]], Optional[str]]:
+    """
+    Tenta converter para lista de strings:
+      1) JSON array → ["a","b"]
+      2) JSON escalar → ["valor"]
+      3) CSV → "a,b,c"
+    Falhando tudo: retorna (None, "<nota para anexar em anotacoes>").
+    """
+    if value is None:
+        return None, None
+    raw = value.strip()
+    if not raw:
+        return None, None
+
+    # tenta JSON primeiro
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(x) for x in parsed], None
+        return [str(parsed)], None
+    except Exception:
+        # tenta CSV
+        if "," in raw:
+            parts = [p.strip() for p in raw.split(",")]
+            parts = [p for p in parts if p]
+            if parts:
+                return parts, None
+
+    # não deu pra interpretar → não quebra: salva None e manda recado pra 'anotacoes'
+    return None, f"[INPUT_BRUTO_NAO_ESTRUTURADO: {raw}]"
 
 def _insert_backend_row_initial(
     dominio: str,
@@ -135,16 +167,16 @@ def _update_after_deploy(id_: int, rota: str, porta: int, url: str):
              summary="Criar mini-backend (ZIP) e publicar")
 def criar_miniapi(
     arquivo: UploadFile = File(..., description="ZIP com app/main.py (+requirements.txt)"),
-    # ==== novos campos vindos do frontend ====
+    # ==== campos vindos do frontend ====
     front_ou_back: Optional[str] = Form(None),     # frontend|backend|fullstack
     id_empresa: Optional[int] = Form(None),
     precisa_logar: bool = Form(False),
     anotacoes: Optional[str] = Form(None),
-    dados_de_entrada: Optional[str] = Form(None, description="JSON array (ex.: [\"foo\",\"bar\"])"),
-    tipos_de_retorno: Optional[str] = Form(None, description="JSON array"),
+    dados_de_entrada: Optional[str] = Form(None, description="Qualquer texto, JSON, ou CSV"),
+    tipos_de_retorno: Optional[str] = Form(None, description="Qualquer texto, JSON, ou CSV"),
     servidor: Optional[str] = Form(None),          # ENUM existente: "teste 1" | "teste 2" | ...
     tipo_api: str = Form(..., description="get|post|put|delete|cron_job|webhook|websocket"),
-    # ==== opcional: ainda pode forçar porta, senão aloca automática ====
+    # ==== opcional: pode forçar porta; senão aloca automática ====
     porta: Optional[int] = Form(None),
     current_user: User = Depends(get_current_user),
 ):
@@ -158,9 +190,14 @@ def criar_miniapi(
     """
     _ensure_dirs()
 
-    # Parse das listas (JSON, se vierem)
-    dados_list = json.loads(dados_de_entrada) if dados_de_entrada else None
-    tipos_list = json.loads(tipos_de_retorno) if tipos_de_retorno else None
+    # Interpretação TOLERANTE: não quebra por input ruim
+    dados_list, dados_raw_note = _parse_list_field_loose(dados_de_entrada)
+    tipos_list, tipos_raw_note = _parse_list_field_loose(tipos_de_retorno)
+
+    anotacoes_final = (anotacoes or "").strip()
+    extras = " ".join([x for x in [dados_raw_note, tipos_raw_note] if x])
+    if extras:
+        anotacoes_final = (anotacoes_final + " " + extras).strip()
 
     # Lê arquivo (mantemos também em bytea conforme seu fluxo)
     rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))
@@ -175,7 +212,7 @@ def criar_miniapi(
         front_ou_back=front_ou_back,
         id_empresa=id_empresa,
         precisa_logar=precisa_logar,
-        anotacoes=anotacoes,
+        anotacoes=anotacoes_final,
         dados_de_entrada=dados_list,
         tipos_de_retorno=tipos_list,
         servidor=servidor,
@@ -185,7 +222,7 @@ def criar_miniapi(
 
     # 2) Rota (no DB: apenas "/<id>")
     rota_db = f"/{new_id}"
-    # Rota que será publicada no Nginx (inclui tipo_api)
+    # Rota publicada no Nginx (inclui tipo_api)
     rota_publica = f"/{new_id}/{tipo_api}"
 
     # 3) Porta
@@ -202,7 +239,7 @@ def criar_miniapi(
     shutil.move(zip_path, os.path.join(release_dir, "src.zip"))
     _unzip_to(os.path.join(release_dir, "src.zip"), release_dir)
 
-    # Garantir app/main.py (como você já usava)
+    # Garantir app/main.py
     main_py = os.path.join(app_dir, "main.py")
     maybe_main = os.path.join(release_dir, "main.py")
     if not os.path.exists(main_py):
@@ -220,7 +257,7 @@ def criar_miniapi(
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha ao instalar dependências: {e}")
 
-    # deploy (systemd + nginx include) – agora com a rota incluindo tipo_api
+    # deploy (systemd + nginx) – com rota incluindo tipo_api
     try:
         _deploy_root(new_id, porta, rota_publica, os.path.join(cur_link, "app"))
     except subprocess.CalledProcessError as e:
@@ -233,8 +270,8 @@ def criar_miniapi(
     return MiniApiOut(
         id=new_id,
         dominio=FIXED_DEPLOY_DOMAIN,
-        rota=rota_db,                 # "/<id>"
-        tipo_api=tipo_api,            # ENUM
+        rota=rota_db,
+        tipo_api=tipo_api,
         porta=porta,
         servidor=servidor or "default",
         precisa_logar=precisa_logar,
