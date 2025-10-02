@@ -21,8 +21,9 @@ RUNUSER = os.getenv("MINIAPIS_RUNUSER", "app")
 PORT_START = int(os.getenv("MINIAPIS_PORT_START", "9200"))
 PORT_END   = int(os.getenv("MINIAPIS_PORT_END",   "9699"))
 
-# domínio fixo para publicação (ex.: pinacle.com.br ou IP)
+# Host/base para montar a URL pública (ex.: IP 178..., domínio etc.)
 FIXED_DEPLOY_DOMAIN = os.getenv("FIXED_DEPLOY_DOMAIN", "pinacle.com.br")
+PUBLIC_SCHEME = os.getenv("PUBLIC_SCHEME", "http")  # use "http" p/ IP sem TLS
 
 def _ensure_dirs():
     os.makedirs(BASE_DIR, exist_ok=True)
@@ -113,7 +114,7 @@ def _parse_list_field_loose(value: Optional[str]) -> Tuple[Optional[List[str]], 
     return None, f"[INPUT_BRUTO_NAO_ESTRUTURADO: {raw}]"
 
 def _insert_backend_row_initial(
-    dominio: str,
+    dominio: Optional[str],  # agora pode ser None para evitar conflito com enum
     front_ou_back: Optional[str],
     id_empresa: Optional[int],
     precisa_logar: bool,
@@ -139,11 +140,11 @@ def _insert_backend_row_initial(
               (:front_ou_back, :dominio, NULL, :arquivo_zip, NULL,
                NULL, :id_empresa, :precisa_logar, :anotacoes,
                :dados, :tipos,
-               NULL, NULL, :servidor, CAST(:tipo_api AS "global".tipo_api_enum))
+               NULL, NULL, :servidor, CAST(:tipo_api AS "gestor_capitais".tipo_api_enum))
             RETURNING id
         """), {
             "front_ou_back": front_ou_back or "backend",
-            "dominio": dominio,
+            "dominio": dominio,  # passe None se o enum não tiver o IP
             "arquivo_zip": arquivo_zip_bytes,
             "id_empresa": id_empresa,
             "precisa_logar": precisa_logar,
@@ -182,11 +183,11 @@ def criar_miniapi(
 ):
     """
     Fluxo:
-      1) INSERT inicial em global.aplicacoes (dominio fixo; rota/porta/url NULL; tipo_api preenchido).
+      1) INSERT inicial em global.aplicacoes (dominio NULL p/ evitar enum; rota/porta/url NULL; tipo_api preenchido).
       2) Gera ID -> define rota = f"/{id}".
       3) Escolhe porta (auto se não vier).
       4) Extrai release, prepara venv, e chama deploy (Nginx + systemd) em /<id>/<tipo_api>/.
-      5) UPDATE em global.aplicacoes com rota, porta e url_completa = https://<dominio>/<id>/<tipo_api>.
+      5) UPDATE em global.aplicacoes com rota, porta e url_completa = {scheme}://{host}/<id>/<tipo_api>.
     """
     _ensure_dirs()
 
@@ -208,7 +209,7 @@ def criar_miniapi(
 
     # 1) Insert inicial
     new_id = _insert_backend_row_initial(
-        dominio=FIXED_DEPLOY_DOMAIN,
+        dominio=None,  # <<< use None para não esbarrar no enum (ou troque para FIXED_DEPLOY_DOMAIN se o enum aceitar)
         front_ou_back=front_ou_back,
         id_empresa=id_empresa,
         precisa_logar=precisa_logar,
@@ -264,12 +265,12 @@ def criar_miniapi(
         raise HTTPException(500, f"Falha no deploy: {e}")
 
     # 5) Atualiza url completa e campos dinâmicos
-    url_comp = f"https://{FIXED_DEPLOY_DOMAIN}{rota_publica}"
+    url_comp = f"{PUBLIC_SCHEME}://{FIXED_DEPLOY_DOMAIN}{rota_publica}"
     _update_after_deploy(new_id, rota_db, porta, url_comp)
 
     return MiniApiOut(
         id=new_id,
-        dominio=FIXED_DEPLOY_DOMAIN,
+        dominio=FIXED_DEPLOY_DOMAIN,   # devolvemos o host público que está sendo usado
         rota=rota_db,
         tipo_api=tipo_api,
         porta=porta,
