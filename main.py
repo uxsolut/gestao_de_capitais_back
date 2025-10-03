@@ -39,6 +39,7 @@ from routers import (
     dashboard,
     cliente_contas,
     health,
+    status_aplicacao,
 )
 from routers import aplicacoes  # router de Aplicações
 from routers import tipo_de_ordem as r_tipo_de_ordem
@@ -124,10 +125,10 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_corretoras.router)
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
-        # router de Aplicações (mantive a tag coerente)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
-        app.include_router(miniapis_router)  # <-- ADICIONADO (expõe /miniapis/...)
-        app.include_router(r_empresas.router, tags=["Empresas"])   # <-- ADICIONADO
+        app.include_router(miniapis_router)  
+        app.include_router(status_aplicacao.router)
+        app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
@@ -142,8 +143,9 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(dashboard.router)
         app.include_router(cliente_contas.router)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
-        app.include_router(miniapis_router)  # <-- ADICIONADO (expõe /miniapis/...)
-        app.include_router(r_empresas.router, tags=["Empresas"])   # <-- ADICIONADO
+        app.include_router(miniapis_router)
+        app.include_router(status_aplicacao.router)
+        app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
