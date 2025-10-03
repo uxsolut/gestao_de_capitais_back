@@ -9,34 +9,34 @@ from database import engine
 
 router = APIRouter(prefix="/status-aplicacao", tags=["Status da Aplicação"])
 
-BACKEND_BOT_TOKEN = os.getenv("BACKEND_BOT_TOKEN")  # use o mesmo segredo no GitHub
-
+# --------- Schemas ---------
 class PutUpdateIn(BaseModel):
     status: str = Field(..., regex="^(concluido|falhou|cancelado|em_andamento)$")
-    resumo_do_erro: Optional[str] = None  # use quando status = falhou (200 linhas máx. recomendado)
+    resumo_do_erro: Optional[str] = None  # use quando status = falhou
 
 class StatusOut(BaseModel):
     aplicacao_id: int
     status: str
     resumo_do_erro: Optional[str] = None
 
+# --------- Helpers locais (sem ler env na importação) ---------
 def _require_bearer(auth_header: Optional[str]):
-    if not BACKEND_BOT_TOKEN:
+    token_cfg = os.getenv("BACKEND_BOT_TOKEN")  # lido só na hora da requisição
+    if not token_cfg:
+        # Não derruba o servidor; apenas recusa a chamada protegida
         raise HTTPException(500, "BACKEND_BOT_TOKEN não configurado")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(401, "Bearer token ausente")
-    token = auth_header.split(" ", 1)[1].strip()
-    if token != BACKEND_BOT_TOKEN:
+    if auth_header.split(" ", 1)[1].strip() != token_cfg:
         raise HTTPException(403, "Token inválido")
 
+# --------- Endpoints ---------
 @router.put("/{aplicacao_id}", status_code=204)
 def put_update(aplicacao_id: int, body: PutUpdateIn, authorization: Optional[str] = Header(None)):
-    """
-    Usado pelo GitHub Actions ao finalizar (ou recomeçar) o deploy.
-    """
     _require_bearer(authorization)
+
     resumo = body.resumo_do_erro if body.status == "falhou" else None
-    if resumo and len(resumo) > 8000:  # proteção opcional (≈ últimas 200 linhas)
+    if resumo and len(resumo) > 8000:  # “200 linhas” aprox.
         resumo = resumo[-8000:]
 
     with engine.begin() as conn:
@@ -50,7 +50,6 @@ def put_update(aplicacao_id: int, body: PutUpdateIn, authorization: Optional[str
             """),
             {"id": aplicacao_id, "st": body.status, "rs": resumo}
         )
-    return
 
 @router.get("/{aplicacao_id}", response_model=StatusOut)
 def get_status(aplicacao_id: int):
