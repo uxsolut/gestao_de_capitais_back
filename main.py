@@ -17,7 +17,7 @@ else:
 
 import os
 import structlog
-from urllib.parse import urlsplit, urlunsplit, urlencode, parse_qsl  # <-- já usado
+from urllib.parse import urlsplit, urlunsplit, urlencode, parse_qsl  # já usado
 
 from config import settings
 from database import engine, Base
@@ -85,47 +85,51 @@ from services.fallback_helpers import (
 # ---------- Criação das tabelas ----------
 Base.metadata.create_all(bind=engine)
 
-# ================= Helper robusto para montar o redirect =================
+# ================= Helper de redirect (IGNORA root_path) =================
 def _absolute_redirect(
     request: Request,
     target: Optional[str],
     append_next: Optional[str] = None,
 ) -> str:
     """
-    Constrói uma URL ABSOLUTA baseada no próprio request.
-    - Se 'target' for absoluto (http/https), apenas agrega o 'next' (se houver).
-    - Se 'target' for relativo, prefixa root_path (se existir) e usa host/esquema do request.
+    Constrói URL ABSOLUTA para redirect.
+    - IGNORA root_path do ASGI scope (mesmo se app foi iniciado com /api).
+    - Se 'target' for absoluto (http/https): só anexa ?next=...
+    - Se 'target' for relativo: usa esquema/host do request e NÃO prefixa root_path.
+    - Também remove root_path do valor enviado em 'next'.
     """
     if not target:
         target = "/"
 
-    # Monta o valor do 'next' (path + query atuais), se solicitado
+    # monta 'next' removendo root_path do path atual
     if append_next is not None:
         next_value = append_next
     else:
         ucur = urlsplit(str(request.url))
-        next_value = ucur.path + (f"?{ucur.query}" if ucur.query else "")
+        path = ucur.path or "/"
+        rp = (request.scope.get("root_path") or "").rstrip("/")
+        if rp and path.startswith(rp + "/"):
+            path = path[len(rp):]  # remove o /api do começo, se houver
+        elif rp and path == rp:
+            path = "/"
+        next_value = path + (f"?{ucur.query}" if ucur.query else "")
 
-    if target.startswith("http://") or target.startswith("https://"):
+    # alvo absoluto: só agrega ?next=...
+    if target.startswith(("http://", "https://")):
         u = urlsplit(target)
         qs = dict(parse_qsl(u.query, keep_blank_values=True))
         qs["next"] = next_value
         new_query = urlencode(qs, doseq=True)
         return urlunsplit((u.scheme, u.netloc, u.path, new_query, u.fragment))
 
-    # URL relativa
-    root_path = request.scope.get("root_path", "") or ""
+    # alvo relativo: NÃO prefixa root_path
     if not target.startswith("/"):
         target = "/" + target
-    # evita duplicação do root_path
-    if root_path and not target.startswith(root_path + "/") and target != root_path:
-        target_path = root_path + target
-    else:
-        target_path = target
 
     u = urlsplit(str(request.url))
     new_query = urlencode({"next": next_value}, doseq=True)
-    return urlunsplit((u.scheme, u.netloc, target_path, new_query, ""))
+    return urlunsplit((u.scheme, u.netloc, target, new_query, ""))
+# ========================================================================
 
 # ======== Guards para não mandar ninguém para a API por engano =========
 def _is_api_path(p: str, root_path: str) -> bool:
@@ -294,7 +298,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(miniapis_router)
         app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
-        app.include_router(r_ativos.router, tags=["Ativos"])
+        app.include_router(r_ativos.router)
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)  # <-- ADICIONADO
         app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])
