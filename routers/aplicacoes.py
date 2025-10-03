@@ -5,7 +5,7 @@ import time
 import re
 import logging
 import io
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, status
 from fastapi.responses import StreamingResponse
@@ -43,13 +43,16 @@ class AplicacaoOut(BaseModel):
     estado: Optional[str] = None
     id_empresa: Optional[int] = None
     precisa_logar: Optional[bool] = None
-    # ---- novos campos ----
+    # campos já existentes no seu SELECT
     anotacoes: Optional[str] = None
     dados_de_entrada: Optional[List[str]] = None
     tipos_de_retorno: Optional[List[str]] = None
     rota: Optional[str] = None
     porta: Optional[str] = None
     servidor: Optional[str] = None
+    # ---- STATUS (novos) ----
+    status: Optional[str] = None
+    resumo_do_erro: Optional[str] = None
 
 
 # ======================= Helpers =======================
@@ -122,31 +125,35 @@ def listar_aplicacoes_por_empresa(
     if not existe:
         raise HTTPException(status_code=404, detail="Empresa não encontrada.")
 
-    # Busca: da empresa OU globais (id_empresa IS NULL)
+    # Busca: da empresa OU globais (id_empresa IS NULL) + LEFT JOIN no status
     with engine.begin() as conn:
         rows = conn.execute(
             text("""
                 SELECT
-                    id,
-                    dominio::text AS dominio,
-                    slug,
-                    url_completa,
-                    front_ou_back::text AS front_ou_back,
-                    estado::text AS estado,
-                    id_empresa,
-                    precisa_logar,
-                    anotacoes,
-                    dados_de_entrada,
-                    tipos_de_retorno,
-                    rota,
-                    porta,
-                    servidor::text AS servidor
-                FROM global.aplicacoes
-                WHERE id_empresa = :id_empresa
-                   OR id_empresa IS NULL
+                    a.id,
+                    a.dominio::text AS dominio,
+                    a.slug,
+                    a.url_completa,
+                    a.front_ou_back::text AS front_ou_back,
+                    a.estado::text AS estado,
+                    a.id_empresa,
+                    a.precisa_logar,
+                    a.anotacoes,
+                    a.dados_de_entrada,
+                    a.tipos_de_retorno,
+                    a.rota,
+                    a.porta,
+                    a.servidor::text AS servidor,
+                    s.status AS status,
+                    s.resumo_do_erro AS resumo_do_erro
+                FROM global.aplicacoes a
+                LEFT JOIN global.status_da_aplicacao s
+                  ON s.aplicacao_id = a.id
+                WHERE a.id_empresa = :id_empresa
+                   OR a.id_empresa IS NULL
                 ORDER BY
-                    CASE WHEN id_empresa = :id_empresa THEN 0 ELSE 1 END,
-                    id DESC
+                    CASE WHEN a.id_empresa = :id_empresa THEN 0 ELSE 1 END,
+                    a.id DESC
             """),
             {"id_empresa": id_empresa},
         ).mappings().all()
@@ -167,6 +174,8 @@ def listar_aplicacoes_por_empresa(
             rota=r["rota"],
             porta=r["porta"],
             servidor=r["servidor"],
+            status=r["status"],
+            resumo_do_erro=r["resumo_do_erro"],
         )
         for r in rows
     ]
@@ -228,12 +237,11 @@ async def criar_aplicacao(
     dominio: str = Form(...),
     slug: Optional[str] = Form(None),
     arquivo_zip: UploadFile = File(...),
-    front_ou_back: str | None = Form(None),
-    estado: str | None = Form(None),
-    id_empresa: int | None = Form(None),
+    front_ou_back: Optional[str] = Form(None),  # <- compatível c/ Python < 3.10
+    estado: Optional[str] = Form(None),         # <- compatível c/ Python < 3.10
+    id_empresa: Optional[int] = Form(None),
     anotacoes: Optional[str] = Form(None),
 ):
-    # (… INALTERADO …)
     slug = _normalize_slug(slug)
     front_ou_back = _normalize_slug(front_ou_back)
     estado = _normalize_slug(estado)
@@ -330,7 +338,6 @@ async def criar_aplicacao(
                     {"id": new_id}
                 )
         except Exception as e:
-            # não bloquear o fluxo de criação por causa do espelho de status
             logging.getLogger("aplicacoes").warning("Falha ao registrar status em_andamento: %s", e)
 
     try:
