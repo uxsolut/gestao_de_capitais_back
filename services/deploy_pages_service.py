@@ -22,20 +22,41 @@ class GitHubPagesDeployer:
             "Accept": "application/vnd.github+json",
         }
 
-    def dispatch(self, *, domain: str, slug: str, zip_url: str, id_empresa: Optional[int] = None) -> None:
+    def dispatch(
+        self,
+        *,
+        domain: str,
+        slug: str,
+        zip_url: str,
+        empresa: Optional[str] = None,   # <- nome já em minúsculo/slug vindo do backend
+        id_empresa: Optional[int] = None # <- opcional, apenas para log/auditoria
+    ) -> None:
         """
         Dispara o workflow de deploy.
-        - 'slug' aqui já deve ser o caminho montado (ex.: 'dev/pinacle/testelegal' ou 'pinacle').
-        - Se 'id_empresa' vier, é repassado para o workflow (que resolve o nome/empresa na URL).
+
+        Parâmetros:
+          - domain: domínio alvo (ex.: gestordecapitais.com)
+          - slug: caminho **clássico** aceito pela regex do workflow:
+                  "", "beta", "dev", "beta/<slug>", "dev/<slug>" ou "<slug>"
+                  (NÃO incluir empresa aqui)
+          - zip_url: URL pública do ZIP para build
+          - empresa: nome/slug da empresa (ex.: "pinacle") — opcional
+          - id_empresa: id numérico — opcional (para auditoria)
+
+        Obs: a montagem final da URL no servidor fica:
+             /<estado?>/<empresa?>/<slug?>
         """
         url = f"https://api.github.com/repos/{self.owner}/{self.repo}/actions/workflows/{self.workflow_file}/dispatches"
+
         inputs = {
-            "domain": domain,   # nomes esperados pelo workflow
+            "domain": domain,
             "slug": slug,
             "zip_url": zip_url,
         }
+        if empresa:
+            inputs["empresa"] = empresa
         if id_empresa is not None:
-            inputs["id_empresa"] = str(id_empresa)  # <-- essencial
+            inputs["id_empresa"] = str(id_empresa)
 
         payload = {"ref": self.ref, "inputs": inputs}
         r = requests.post(url, json=payload, headers=self._headers, timeout=30)
@@ -44,7 +65,8 @@ class GitHubPagesDeployer:
 
     def dispatch_delete(self, *, domain: str, slug: str) -> None:
         """
-        Tenta repository_dispatch (event_type=DELETE_EVENT). Se não, usa workflow_dispatch.
+        Tenta repository_dispatch (event_type=DELETE_EVENT). Se falhar, usa workflow_dispatch.
+        'slug' aqui também segue o formato clássico do workflow.
         """
         url_repo_dispatch = f"https://api.github.com/repos/{self.owner}/{self.repo}/dispatches"
         payload_repo = {
