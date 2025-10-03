@@ -17,7 +17,7 @@ else:
 
 import os
 import structlog
-from urllib.parse import urlsplit, urlunsplit, urlencode, parse_qsl  # <-- ADICIONADO
+from urllib.parse import urlsplit, urlunsplit, urlencode, parse_qsl  # <-- já usado
 
 from config import settings
 from database import engine, Base
@@ -94,46 +94,61 @@ def _absolute_redirect(
     """
     Constrói uma URL ABSOLUTA baseada no próprio request.
     - Se 'target' for absoluto (http/https), apenas agrega o 'next' (se houver).
-    - Se 'target' for relativo, prefixa root_path (se existir) e usa request.url.replace().
+    - Se 'target' for relativo, prefixa root_path (se existir) e usa host/esquema do request.
     """
     if not target:
         target = "/"
 
     # Monta o valor do 'next' (path + query atuais), se solicitado
-    next_value = None
-    if append_next:
-        # usa exatamente o valor passado
+    if append_next is not None:
         next_value = append_next
     else:
-        # por padrão, next = path atual + query
-        u = urlsplit(str(request.url))
-        next_value = u.path + (f"?{u.query}" if u.query else "")
+        ucur = urlsplit(str(request.url))
+        next_value = ucur.path + (f"?{ucur.query}" if ucur.query else "")
 
     if target.startswith("http://") or target.startswith("https://"):
-        # URL absoluta: só agregar 'next' sem quebrar query existente
         u = urlsplit(target)
         qs = dict(parse_qsl(u.query, keep_blank_values=True))
         qs["next"] = next_value
         new_query = urlencode(qs, doseq=True)
         return urlunsplit((u.scheme, u.netloc, u.path, new_query, u.fragment))
 
-    # URL relativa: garantir "/" e prefixar root_path se houver
+    # URL relativa
     root_path = request.scope.get("root_path", "") or ""
     if not target.startswith("/"):
         target = "/" + target
-    # evita duplicar root_path se o target já começar com ele
+    # evita duplicação do root_path
     if root_path and not target.startswith(root_path + "/") and target != root_path:
         target_path = root_path + target
     else:
         target_path = target
 
-    # Reaproveita host/esquema do request e injeta path + query
     u = urlsplit(str(request.url))
-    dest_qs = {"next": next_value}
-    new_query = urlencode(dest_qs, doseq=True)
+    new_query = urlencode({"next": next_value}, doseq=True)
     return urlunsplit((u.scheme, u.netloc, target_path, new_query, ""))
 
-# ========================================================================
+# ======== Guards para não mandar ninguém para a API por engano =========
+def _is_api_path(p: str, root_path: str) -> bool:
+    if not p:
+        return False
+    return p.startswith("/api") or p.startswith("/openapi") or p.startswith("/docs") or (
+        bool(root_path) and p.startswith(root_path)
+    )
+
+def _safe_login_path(estado: Optional[str], empresa: Optional[str]) -> str:
+    if estado and empresa:
+        return f"/{estado}/{empresa}/login"
+    if empresa:
+        return f"/{empresa}/login"
+    return "/login"
+
+def _safe_company_root(estado: Optional[str], empresa: Optional[str]) -> str:
+    if estado and empresa:
+        return f"/{estado}/{empresa}"
+    if empresa:
+        return f"/{empresa}"
+    return "/"
+# ======================================================================
 
 def create_app(mode: str = "all") -> FastAPI:
     docs_enabled = mode in ("public", "all", "write", "read")
@@ -204,7 +219,12 @@ def create_app(mode: str = "all") -> FastAPI:
 
             need = precisa_logar(dominio, empresa_id, estado, leaf)
             if need is True and not has_valid_jwt(request):
-                login_url = url_login(dominio, empresa_id, estado)  # relativo ou absoluto
+                login_url = url_login(dominio, empresa_id, estado)  # pode vir relativo/absoluto
+                # ---- GUARD: se o banco mandar algo da API, forçar login de front
+                root_path_local = request.scope.get("root_path", "") or ""
+                if not login_url or _is_api_path(str(login_url), root_path_local):
+                    login_url = _safe_login_path(estado, empresa_slug)
+
                 dest = _absolute_redirect(request, login_url)
                 return RedirectResponse(dest, status_code=302)
 
@@ -220,8 +240,13 @@ def create_app(mode: str = "all") -> FastAPI:
         empresa_id = empresa_id_por_slug(empresa_slug)
         if not empresa_id:
             return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
-        dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado) or "/"
-        return RedirectResponse(_absolute_redirect(request, dest_rel), status_code=302)
+
+        dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
+        root_path_local = request.scope.get("root_path", "") or ""
+        if not dest_rel or _is_api_path(str(dest_rel), root_path_local):
+            dest_rel = _safe_company_root(estado, empresa_slug)
+
+        return RedirectResponse(_absolute_redirect(request, dest_rel or "/"), status_code=302)
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
     @app.get("/")
