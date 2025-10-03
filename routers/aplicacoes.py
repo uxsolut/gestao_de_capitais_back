@@ -54,8 +54,10 @@ def _is_producao(estado: Optional[str]) -> bool:
     return (estado or "producao") == "producao"
 
 
-# NEW: resolve o "segmento" da empresa (lower(nome))  # <<<
 def _empresa_segment(conn, id_empresa: Optional[int]) -> Optional[str]:
+    """
+    Retorna lower(nome) da empresa ou None se não informado.
+    """
     if not id_empresa:
         return None
     seg = conn.execute(
@@ -67,8 +69,12 @@ def _empresa_segment(conn, id_empresa: Optional[int]) -> Optional[str]:
     return seg.strip() or None
 
 
-# NEW: monta URL completa com empresa no meio  # <<<
 def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str], empresa_seg: Optional[str]) -> str:
+    """
+    Monta URL visível/publicada com empresa no meio:
+    - prod:            /<empresa?>/<slug?>
+    - dev/beta:  /<estado>/<empresa?>/<slug?>
+    """
     base = f"https://{dominio}".rstrip("/")
     parts: List[str] = []
     if estado and not _is_producao(estado):
@@ -79,23 +85,13 @@ def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str], emp
         parts.append(slug.strip("/"))
     return base + ("/" + "/".join(parts) if parts else "/")
 
-# NEW: monta o caminho usado no deploy (mesma regra da URL)  # <<<
-# retorna None quando não tem "estado" ativo (ex.: desativado ou None)
-def _deploy_path(estado: Optional[str], slug: Optional[str], empresa_seg: Optional[str]) -> Optional[str]:
-    if not estado or estado == "desativado":
-        return None
-    parts: List[str] = []
-    if not _is_producao(estado):
-        parts.append(estado.strip("/"))
-    if empresa_seg:
-        parts.append(empresa_seg.strip("/"))
-    if slug:
-        parts.append(slug.strip("/"))
-    return "/".join(parts)  # pode ser "" (raiz produção)
-
 
 def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
-    # (mantido apenas por compatibilidade; não usado mais onde há empresa)  # <<<
+    """
+    Caminho que o **workflow do Actions espera** (regex do workflow):
+       "" | "beta" | "dev" | "beta/<slug>" | "dev/<slug>" | "<slug>"
+    NUNCA inclui empresa aqui. A empresa é enviada em input separado (id_empresa).
+    """
     if not estado or estado == "desativado":
         return None
     if estado == "producao":
@@ -138,10 +134,8 @@ def listar_aplicacoes_por_empresa(
 ):
     """
     - Requer autenticação (JWT), mas **não** valida propriedade da empresa.
-    - Retorna registros de `global.aplicacoes` vinculados ao `id_empresa` **ou** sem empresa (`id_empresa IS NULL`).
-    - Não retorna o bytea (`arquivo_zip`).
+    - Retorna registros da empresa OU globais (id_empresa IS NULL).
     """
-    # Confere existência da empresa
     with engine.begin() as conn:
         existe = conn.execute(
             text("SELECT 1 FROM global.empresas WHERE id = :id LIMIT 1"),
@@ -151,7 +145,6 @@ def listar_aplicacoes_por_empresa(
     if not existe:
         raise HTTPException(status_code=404, detail="Empresa não encontrada.")
 
-    # Busca: da empresa OU globais (id_empresa IS NULL) + LEFT JOIN no status
     with engine.begin() as conn:
         rows = conn.execute(
             text("""
@@ -195,11 +188,6 @@ def listar_aplicacoes_por_empresa(
             id_empresa=r["id_empresa"],
             precisa_logar=None if r["precisa_logar"] is None else bool(r["precisa_logar"]),
             anotacoes=r["anotacoes"],
-            dados_de_entrada=r["dados_de_entrada"],
-            tipos_de_retorno=r["tipos_de_retorno"],
-            rota=r["rota"],
-            porta=r["porta"],
-            servidor=r["servidor"],
             status=r["status"],
             resumo_do_erro=r["resumo_do_erro"],
         )
@@ -295,9 +283,7 @@ async def criar_aplicacao(
 
     try:
         with engine.begin() as conn:
-            # empresa (lower(nome))                               # <<<
-            empresa_seg = _empresa_segment(conn, id_empresa)      # <<<
-            # URL completa com empresa no meio                    # <<<
+            empresa_seg = _empresa_segment(conn, id_empresa)
             url_full = _canonical_url(dominio, estado, slug, empresa_seg)
 
             if estado in {"producao", "beta", "dev"}:
@@ -337,7 +323,7 @@ async def criar_aplicacao(
                     "dominio": dominio,
                     "slug": slug,
                     "arquivo_zip": data,
-                    "url_completa": url_full,                     # <<<
+                    "url_completa": url_full,
                     "front_ou_back": front_ou_back or "",
                     "estado": estado or "",
                     "id_empresa": id_empresa,
@@ -348,16 +334,12 @@ async def criar_aplicacao(
             new_id = int(row["id"])
             db_saved = True
 
-            # Deploy: estado/empresa/slug (ou empresa/slug em produção)     # <<<
-            deploy_path = _deploy_path(estado, slug, empresa_seg)            # <<<
     except Exception as e:
         db_error = f"{e.__class__.__name__}: {e}"
         logging.getLogger("aplicacoes").warning(
             "Falha ao inserir/substituir em global.aplicacoes: %s", db_error
         )
-        deploy_path = None  # <<<
-        empresa_seg = None  # <<<
-        url_full = None     # <<<
+        url_full = None
 
     # ➕ Status 'em_andamento'
     if db_saved and new_id is not None:
@@ -378,27 +360,19 @@ async def criar_aplicacao(
 
     # Disparar deploy/delete
     try:
+        # Deleta eventual versão anterior (usa slug clássico)
         if removidos_ids:
-            # apagar o caminho antigo (sem empresa, mesma regra de antes)
             old_path_remove = _deploy_slug(slug, estado)
             if old_path_remove is not None:
                 GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=old_path_remove or "")
 
-        if estado in {"producao", "beta", "dev"}:
-            if deploy_path is None:
-                deploy_path = _deploy_path(estado, slug, empresa_seg)
-            GitHubPagesDeployer().dispatch(                      # <<<
-                domain=dominio,
-                slug=deploy_path or "",
-                zip_url=zip_url,
-                id_empresa=id_empresa,                           # (precisa no serviço)
-            )
-        elif estado is None:
-            # default produção
-            deploy_path = _deploy_path("producao", slug, empresa_seg)
+        # Deploy atual (slug clássico + id_empresa separado)
+        estado_efetivo = estado or "producao"
+        slug_deploy = _deploy_slug(slug, estado_efetivo)
+        if slug_deploy is not None:
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
-                slug=deploy_path or "",
+                slug=slug_deploy or "",
                 zip_url=zip_url,
                 id_empresa=id_empresa,
             )
@@ -483,11 +457,10 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     new_path_active = new_estado in {"producao", "beta", "dev"}
 
     with engine.begin() as conn:
-        # empresa (lower(nome)) para URL/deploy                     # <<<
-        empresa_seg = _empresa_segment(conn, new_id_empresa)        # <<<
-        nova_url = _canonical_url(new_dominio, new_estado, new_slug, empresa_seg)  # <<<
+        empresa_seg = _empresa_segment(conn, new_id_empresa)
+        nova_url = _canonical_url(new_dominio, new_estado, new_slug, empresa_seg)
 
-        # desativar conflitos (mantido como estava)
+        # Desativar conflitos
         if new_path_active:
             res = conn.execute(
                 text("""
@@ -504,9 +477,6 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
             removidos_ids = [r[0] for r in res.fetchall()]
         else:
             removidos_ids = []
-
-        old_path = _deploy_path(old_estado, old_slug, _empresa_segment(conn, old_id_empresa))
-        new_path = _deploy_path(new_estado, new_slug, empresa_seg)
 
         conn.execute(
             text("""
@@ -532,8 +502,12 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
 
     try:
         if new_path_active:
-            if old_path_active and old_path and (old_path != new_path):
-                GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
+            # Se mudou o caminho clássico, removemos o antigo
+            old_slug_for_deploy = _deploy_slug(old_slug, old_estado)
+            new_slug_for_deploy = _deploy_slug(new_slug, new_estado)
+
+            if old_path_active and old_slug_for_deploy and (old_slug_for_deploy != new_slug_for_deploy):
+                GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_slug_for_deploy or "")
 
             if not BASE_UPLOADS_URL:
                 raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
@@ -545,17 +519,19 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
                 f.write(old_zip)
             zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
 
-            if removidos_ids and new_path is not None:
-                GitHubPagesDeployer().dispatch_delete(domain=new_dominio, slug=new_path or "")
+            if removidos_ids and new_slug_for_deploy is not None:
+                GitHubPagesDeployer().dispatch_delete(domain=new_dominio, slug=new_slug_for_deploy or "")
 
-            GitHubPagesDeployer().dispatch(                      # <<<
+            GitHubPagesDeployer().dispatch(
                 domain=new_dominio,
-                slug=new_path or "",
+                slug=new_slug_for_deploy or "",
                 zip_url=zip_url,
                 id_empresa=new_id_empresa,
             )
-        elif (not new_path_active) and old_path_active and (new_estado == "desativado") and (old_path is not None):
-            GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_path or "")
+        elif (not new_path_active) and old_path_active and (new_estado == "desativado"):
+            old_slug_for_deploy = _deploy_slug(old_slug, old_estado)
+            if old_slug_for_deploy is not None:
+                GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_slug_for_deploy or "")
     except HTTPException:
         raise
     except Exception as e:
@@ -610,16 +586,12 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
     dominio = row["dominio"]
     slug = row["slug"]
     estado = row["estado"]
-    id_empresa = row["id_empresa"]
 
-    # caminho real com empresa                                      # <<<
-    with engine.begin() as conn:
-        empresa_seg = _empresa_segment(conn, id_empresa)
-    slug_path: Optional[str] = _deploy_path(estado, slug, empresa_seg)  # <<<
+    slug_for_delete = _deploy_slug(slug, estado)  # formato aceito pelo workflow
 
     try:
-        if slug_path is not None:
-            GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_path or "")
+        if slug_for_delete is not None:
+            GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_for_delete or "")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Falha ao disparar delete no GitHub: {e}")
 
@@ -639,6 +611,6 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
         "dominio": dominio,
         "slug": slug,
         "estado": estado,
-        "github_action": {"workflow": "delete-landing", "slug_removed": slug_path},
+        "github_action": {"workflow": "delete-landing", "slug_removed": slug_for_delete},
         "apagado_no_banco": apagado_no_banco,
     }
