@@ -43,14 +43,7 @@ class AplicacaoOut(BaseModel):
     estado: Optional[str] = None
     id_empresa: Optional[int] = None
     precisa_logar: Optional[bool] = None
-    # campos já existentes no seu SELECT
     anotacoes: Optional[str] = None
-    dados_de_entrada: Optional[List[str]] = None
-    tipos_de_retorno: Optional[List[str]] = None
-    rota: Optional[str] = None
-    porta: Optional[str] = None
-    servidor: Optional[str] = None
-    # ---- STATUS (novos) ----
     status: Optional[str] = None
     resumo_do_erro: Optional[str] = None
 
