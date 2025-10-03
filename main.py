@@ -1,8 +1,11 @@
 # main.py
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import RedirectResponse
 from prometheus_fastapi_instrumentator import Instrumentator
+from starlette.middleware.base import BaseHTTPMiddleware
+from typing import Optional, Tuple
 
 from dotenv import load_dotenv, find_dotenv
 from pathlib import Path
@@ -48,9 +51,7 @@ from routers import empresas as r_empresas
 from routers.miniapis import router as miniapis_router
 from routers import status_aplicacao  # <-- ADICIONADO
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-from routers import desvio_rota_front  # <-- ADICIONADO: novo router
-# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+# (REMOVIDO) from routers import desvio_rota_front  # <-- não precisamos mais do router
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -74,6 +75,11 @@ structlog.configure(
     cache_logger_on_first_use=True,
 )
 logger = structlog.get_logger()
+
+# ---------- Fallback helpers (queries encapsuladas) ----------
+from services.fallback_helpers import (
+    empresa_id_por_slug, precisa_logar, url_login, url_nao_tem
+)
 
 # ---------- Criação das tabelas ----------
 Base.metadata.create_all(bind=engine)
@@ -106,6 +112,69 @@ def create_app(mode: str = "all") -> FastAPI:
         allow_headers=["*"],
     )
 
+    # ===================== FALLBACK SERVER-SIDE =====================
+    def parse_url(request: Request) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+        """
+        Retorna (dominio, estado, empresa_slug, slug)
+        - estado: 'dev'|'beta'|None
+        - empresa_slug: ex. 'pinacle' ou None
+        - slug: parte após empresa (pode ser None)
+        """
+        dominio = (request.url.hostname or "").lower()
+        parts = [p for p in request.url.path.split("/") if p]
+        estado = empresa = leaf = None
+        i = 0
+        if len(parts) > 0 and parts[0] in ("dev", "beta"):
+            estado = parts[0]
+            i = 1
+        if len(parts) > i:
+            empresa = parts[i]
+            i += 1
+        if len(parts) > i:
+            leaf = "/".join(parts[i:])
+        return dominio, estado, empresa, leaf
+
+    def has_valid_jwt(request: Request) -> bool:
+        # Troque por sua verificação real (cookie/Authorization/JWT decode)
+        auth = request.headers.get("authorization", "")
+        return auth.lower().startswith("bearer ") and len(auth.split()) == 2
+
+    class AuthGateMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            dominio, estado, empresa_slug, leaf = parse_url(request)
+
+            # Login só se houver empresa e estado (login é por estado)
+            if not empresa_slug or not estado:
+                return await call_next(request)
+
+            empresa_id = empresa_id_por_slug(empresa_slug)
+            if not empresa_id:
+                return await call_next(request)
+
+            need = precisa_logar(dominio, empresa_id, estado, leaf)
+            if need is True and not has_valid_jwt(request):
+                login_url = url_login(dominio, empresa_id, estado)
+                if login_url:
+                    return RedirectResponse(f"{login_url}?next={request.url.path}", status_code=302)
+
+            return await call_next(request)
+
+    app.add_middleware(AuthGateMiddleware)
+
+    @app.exception_handler(404)
+    async def not_found_handler(request: Request, exc):
+        dominio, estado, empresa_slug, _ = parse_url(request)
+        if not empresa_slug:
+            return RedirectResponse(url="/", status_code=302)
+        empresa_id = empresa_id_por_slug(empresa_slug)
+        if not empresa_id:
+            return RedirectResponse(url="/", status_code=302)
+        dest = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
+        if dest:
+            return RedirectResponse(dest, status_code=302)
+        return RedirectResponse(url="/", status_code=302)
+    # =================== FIM FALLBACK SERVER-SIDE ===================
+
     @app.get("/")
     def read_root():
         return {"mensagem": "API online com sucesso!", "mode": mode, "root_path": root_path}
@@ -136,9 +205,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)  # <-- ADICIONADO
-        # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])  # <-- ADICIONADO
-        # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+        # (REMOVIDO) app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])
 
     elif mode == "all":
         app.include_router(ordens.router)
@@ -156,9 +223,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)  # <-- ADICIONADO
-        # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])  # <-- ADICIONADO
-        # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+        # (REMOVIDO) app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
