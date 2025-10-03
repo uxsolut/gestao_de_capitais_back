@@ -51,7 +51,7 @@ from routers import empresas as r_empresas
 from routers.miniapis import router as miniapis_router
 from routers import status_aplicacao  # <-- ADICIONADO
 
-# (REMOVIDO) from routers import desvio_rota_front  # <-- não precisamos mais do router
+from routers import desvio_rota_front  # <-- não precisamos mais do router
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -205,7 +205,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)  # <-- ADICIONADO
-        # (REMOVIDO) app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])
+        app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])
 
     elif mode == "all":
         app.include_router(ordens.router)
@@ -223,7 +223,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)  # <-- ADICIONADO
-        # (REMOVIDO) app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])
+        app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
