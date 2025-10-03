@@ -41,6 +41,7 @@ from routers import (
     health,
 )
 from routers import aplicacoes  # router de Aplicações
+from routers import status_aplicacao
 from routers import tipo_de_ordem as r_tipo_de_ordem
 from routers import ativos as r_ativos
 from routers import analises as r_analises
@@ -130,6 +131,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
+        app.include_router(status_aplicacao.router)
 
     elif mode == "all":
         app.include_router(ordens.router)
@@ -146,6 +148,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
+        app.include_router(status_aplicacao.router)
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
