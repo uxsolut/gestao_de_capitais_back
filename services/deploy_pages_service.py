@@ -1,5 +1,5 @@
-import os
-import requests
+# services/deploy_pages_service.py
+import os, requests
 from typing import Optional
 
 class GitHubPagesDeployer:
@@ -9,10 +9,8 @@ class GitHubPagesDeployer:
         self.ref = os.getenv("GITHUB_REF", "main")
         self.workflow_file = os.getenv("WORKFLOW_FILE", "deploy-landing.yml")
         self.token = os.getenv("GITHUB_TOKEN_PAGES")
-
-        # DELETE: nomes com defaults
         self.delete_workflow_file = os.getenv("DELETE_WORKFLOW_FILE", "delete-landing.yml")
-        self.delete_event = os.getenv("DELETE_EVENT", "delete-landing")  # repository_dispatch
+        self.delete_event = os.getenv("DELETE_EVENT", "delete-landing")
 
         if not all([self.owner, self.repo, self.workflow_file, self.token]):
             raise RuntimeError("Defina GITHUB_OWNER, GITHUB_REPO, WORKFLOW_FILE e GITHUB_TOKEN_PAGES.")
@@ -26,65 +24,27 @@ class GitHubPagesDeployer:
         self,
         *,
         domain: str,
-        slug: str,
+        slug: str,              # "", "dev", "beta/x", "x" (SEM empresa)
         zip_url: str,
-        empresa: Optional[str] = None,   # <- nome já em minúsculo/slug vindo do backend
-        id_empresa: Optional[int] = None # <- opcional, apenas para log/auditoria
+        empresa: Optional[str] = None,   # <- nome pronto (minúsculo)
+        id_empresa: Optional[int] = None # opcional p/ auditoria
     ) -> None:
-        """
-        Dispara o workflow de deploy.
-
-        Parâmetros:
-          - domain: domínio alvo (ex.: gestordecapitais.com)
-          - slug: caminho **clássico** aceito pela regex do workflow:
-                  "", "beta", "dev", "beta/<slug>", "dev/<slug>" ou "<slug>"
-                  (NÃO incluir empresa aqui)
-          - zip_url: URL pública do ZIP para build
-          - empresa: nome/slug da empresa (ex.: "pinacle") — opcional
-          - id_empresa: id numérico — opcional (para auditoria)
-
-        Obs: a montagem final da URL no servidor fica:
-             /<estado?>/<empresa?>/<slug?>
-        """
         url = f"https://api.github.com/repos/{self.owner}/{self.repo}/actions/workflows/{self.workflow_file}/dispatches"
-
-        inputs = {
-            "domain": domain,
-            "slug": slug,
-            "zip_url": zip_url,
-        }
+        inputs = {"domain": domain, "slug": slug, "zip_url": zip_url}
         if empresa:
             inputs["empresa"] = empresa
         if id_empresa is not None:
             inputs["id_empresa"] = str(id_empresa)
-
-        payload = {"ref": self.ref, "inputs": inputs}
-        r = requests.post(url, json=payload, headers=self._headers, timeout=30)
+        r = requests.post(url, json={"ref": self.ref, "inputs": inputs}, headers=self._headers, timeout=30)
         if r.status_code not in (201, 204):
             raise RuntimeError(f"Falha ao disparar workflow ({r.status_code}): {r.text}")
 
     def dispatch_delete(self, *, domain: str, slug: str) -> None:
-        """
-        Tenta repository_dispatch (event_type=DELETE_EVENT). Se falhar, usa workflow_dispatch.
-        'slug' aqui também segue o formato clássico do workflow.
-        """
-        url_repo_dispatch = f"https://api.github.com/repos/{self.owner}/{self.repo}/dispatches"
-        payload_repo = {
-            "event_type": self.delete_event,
-            "client_payload": {"domain": domain, "slug": slug},
-        }
-        r = requests.post(url_repo_dispatch, json=payload_repo, headers=self._headers, timeout=30)
+        url_repo = f"https://api.github.com/repos/{self.owner}/{self.repo}/dispatches"
+        r = requests.post(url_repo, json={"event_type": self.delete_event, "client_payload": {"domain": domain, "slug": slug}}, headers=self._headers, timeout=30)
         if r.status_code == 204:
-            return  # ok via repository_dispatch
-
-        url_workflow_dispatch = (
-            f"https://api.github.com/repos/{self.owner}/{self.repo}"
-            f"/actions/workflows/{self.delete_workflow_file}/dispatches"
-        )
-        payload_wf = {"ref": self.ref, "inputs": {"domain": domain, "slug": slug}}
-        r2 = requests.post(url_workflow_dispatch, json=payload_wf, headers=self._headers, timeout=30)
+            return
+        url_wf = f"https://api.github.com/repos/{self.owner}/{self.repo}/actions/workflows/{self.delete_workflow_file}/dispatches"
+        r2 = requests.post(url_wf, json={"ref": self.ref, "inputs": {"domain": domain, "slug": slug}}, headers=self._headers, timeout=30)
         if r2.status_code not in (201, 204):
-            raise RuntimeError(
-                f"Falha ao disparar delete "
-                f"(repo_dispatch={r.status_code}, workflow_dispatch={r2.status_code} {r2.text})"
-            )
+            raise RuntimeError(f"Falha ao disparar delete (repo_dispatch={r.status_code}, workflow_dispatch={r2.status_code} {r2.text})")
