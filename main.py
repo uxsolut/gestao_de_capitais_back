@@ -84,6 +84,24 @@ from services.fallback_helpers import (
 # ---------- Criação das tabelas ----------
 Base.metadata.create_all(bind=engine)
 
+
+# ============= Helper para forçar URL absoluta nos redirects =============
+def _abs_url(dominio: str, path_or_url: Optional[str]) -> Optional[str]:
+    """
+    Converte um path relativo ('/login', 'beta/pinacle') em
+    'https://{dominio}/{path}'. Se já for http(s), retorna como veio.
+    """
+    if not path_or_url:
+        return None
+    p = str(path_or_url)
+    if p.startswith("http://") or p.startswith("https://"):
+        return p
+    if not p.startswith("/"):
+        p = "/" + p
+    return f"https://{dominio}{p}"
+# ========================================================================
+
+
 def create_app(mode: str = "all") -> FastAPI:
     docs_enabled = mode in ("public", "all", "write", "read")
     docs_url = "/docs" if docs_enabled else None
@@ -154,8 +172,12 @@ def create_app(mode: str = "all") -> FastAPI:
             need = precisa_logar(dominio, empresa_id, estado, leaf)
             if need is True and not has_valid_jwt(request):
                 login_url = url_login(dominio, empresa_id, estado)
-                if login_url:
-                    return RedirectResponse(f"{login_url}?next={request.url.path}", status_code=302)
+                dest = _abs_url(dominio, login_url) or "/"
+                # preserva o destino atual (path + query) no parâmetro next
+                next_target = str(request.url.path)
+                if request.url.query:
+                    next_target += f"?{request.url.query}"
+                return RedirectResponse(f"{dest}?next={next_target}", status_code=302)
 
             return await call_next(request)
 
@@ -165,14 +187,13 @@ def create_app(mode: str = "all") -> FastAPI:
     async def not_found_handler(request: Request, exc):
         dominio, estado, empresa_slug, _ = parse_url(request)
         if not empresa_slug:
-            return RedirectResponse(url="/", status_code=302)
+            return RedirectResponse(url=_abs_url(dominio, "/"), status_code=302)
         empresa_id = empresa_id_por_slug(empresa_slug)
         if not empresa_id:
-            return RedirectResponse(url="/", status_code=302)
-        dest = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
-        if dest:
-            return RedirectResponse(dest, status_code=302)
-        return RedirectResponse(url="/", status_code=302)
+            return RedirectResponse(url=_abs_url(dominio, "/"), status_code=302)
+        dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
+        dest = _abs_url(dominio, dest_rel or "/")
+        return RedirectResponse(dest, status_code=302)
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
     @app.get("/")
@@ -281,6 +302,7 @@ def create_app(mode: str = "all") -> FastAPI:
             logger.error("Erro ao fechar conexoes de banco", error=str(e))
 
     return app
+
 
 MODE = os.getenv("APP_MODE", "all")
 app = create_app(MODE)
