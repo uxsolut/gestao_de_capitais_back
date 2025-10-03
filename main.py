@@ -17,6 +17,7 @@ else:
 
 import os
 import structlog
+from urllib.parse import urlsplit  # <-- ADICIONADO
 
 from config import settings
 from database import engine, Base
@@ -84,12 +85,25 @@ from services.fallback_helpers import (
 # ---------- Criação das tabelas ----------
 Base.metadata.create_all(bind=engine)
 
-
-# ============= Helper para forçar URL absoluta nos redirects =============
-def _abs_url(dominio: str, path_or_url: Optional[str]) -> Optional[str]:
+# ============= Helpers seguros de URL absoluta (respeitam proxy) =============
+def _origin_from_request(request: Request) -> str:
     """
-    Converte um path relativo ('/login', 'beta/pinacle') em
-    'https://{dominio}/{path}'. Se já for http(s), retorna como veio.
+    Retorna 'scheme://host[:port]' usando X-Forwarded-* se presente.
+    Não depende de variáveis externas.
+    """
+    h = request.headers
+    scheme = (h.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
+    host = (h.get("x-forwarded-host") or h.get("host") or request.url.netloc).split(",")[0].strip()
+    # Se o proxy enviar X-Forwarded-Port e o host não tiver porta explícita:
+    xf_port = h.get("x-forwarded-port")
+    if xf_port and ":" not in host:
+        host = f"{host}:{xf_port.split(',')[0].strip()}"
+    return f"{scheme}://{host}"
+
+def _abs_from_request(request: Request, path_or_url: Optional[str]) -> Optional[str]:
+    """
+    Se for http(s), retorna como veio. Se for relativo, prefixa com a origem real.
+    Garante que comece com '/' quando relativo.
     """
     if not path_or_url:
         return None
@@ -98,9 +112,8 @@ def _abs_url(dominio: str, path_or_url: Optional[str]) -> Optional[str]:
         return p
     if not p.startswith("/"):
         p = "/" + p
-    return f"https://{dominio}{p}"
-# ========================================================================
-
+    return _origin_from_request(request) + p
+# ============================================================================
 
 def create_app(mode: str = "all") -> FastAPI:
     docs_enabled = mode in ("public", "all", "write", "read")
@@ -171,13 +184,13 @@ def create_app(mode: str = "all") -> FastAPI:
 
             need = precisa_logar(dominio, empresa_id, estado, leaf)
             if need is True and not has_valid_jwt(request):
-                login_url = url_login(dominio, empresa_id, estado)
-                dest = _abs_url(dominio, login_url) or "/"
+                login_url = url_login(dominio, empresa_id, estado)  # pode vir relativo
+                dest = _abs_from_request(request, login_url) or "/"
                 # preserva o destino atual (path + query) no parâmetro next
-                next_target = str(request.url.path)
-                if request.url.query:
-                    next_target += f"?{request.url.query}"
-                return RedirectResponse(f"{dest}?next={next_target}", status_code=302)
+                split = urlsplit(str(request.url))
+                next_target = split.path + (f"?{split.query}" if split.query else "")
+                sep = "&" if ("?" in dest) else "?"
+                return RedirectResponse(f"{dest}{sep}next={next_target}", status_code=302)
 
             return await call_next(request)
 
@@ -187,12 +200,12 @@ def create_app(mode: str = "all") -> FastAPI:
     async def not_found_handler(request: Request, exc):
         dominio, estado, empresa_slug, _ = parse_url(request)
         if not empresa_slug:
-            return RedirectResponse(url=_abs_url(dominio, "/"), status_code=302)
+            return RedirectResponse(url=_abs_from_request(request, "/"), status_code=302)
         empresa_id = empresa_id_por_slug(empresa_slug)
         if not empresa_id:
-            return RedirectResponse(url=_abs_url(dominio, "/"), status_code=302)
+            return RedirectResponse(url=_abs_from_request(request, "/"), status_code=302)
         dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
-        dest = _abs_url(dominio, dest_rel or "/")
+        dest = _abs_from_request(request, dest_rel or "/")
         return RedirectResponse(dest, status_code=302)
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
