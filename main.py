@@ -17,6 +17,7 @@ else:
 
 import os
 import structlog
+from urllib.parse import urlsplit, urlunsplit, urlencode, parse_qsl
 
 from config import settings
 from database import engine, Base
@@ -25,11 +26,11 @@ from middleware.error_handler import ErrorHandlerMiddleware
 # --- Carrega models para garantir os mapeamentos/tabelas ---
 from models import corretoras  # noqa: F401
 from models import robos as m_robos  # noqa: F401
-from models import requisicoes as m_requisicao  # noqa: F401
-from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401
-from models import ordens as m_ordens  # noqa: F401
-from models import aplicacoes as m_aplicacoes  # noqa: F401
-from models import empresas as m_empresas  # noqa: F401
+from models import requisicoes como m_requisicao  # noqa: F401
+from models import tipo_de_ordem como m_tipo_de_ordem  # noqa: F401
+from models import ordens como m_ordens  # noqa: F401
+from models import aplicacoes como m_aplicacoes  # noqa: F401
+from models import empresas como m_empresas  # noqa: F401
 
 # --- Routers "públicos" de app (EXCETO processamento/consumo) ---
 from routers import (
@@ -46,12 +47,11 @@ from routers import (
 from routers import aplicacoes  # router de Aplicações
 from routers import tipo_de_ordem as r_tipo_de_ordem
 from routers import ativos as r_ativos
-from routers import analises as r_analises
+from routers import analises como r_analises
 from routers import empresas as r_empresas
-from routers.miniapis import router as miniapis_router
+from routers.miniapis import router como miniapis_router
 from routers import status_aplicacao  # <-- ADICIONADO
-
-from routers import desvio_rota_front  # <-- não precisamos mais do router
+from routers import desvio_rota_front
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -84,12 +84,41 @@ from services.fallback_helpers import (
 # ---------- Criação das tabelas ----------
 Base.metadata.create_all(bind=engine)
 
-
-# ============= Helper para forçar URL absoluta nos redirects =============
-def _abs_url(dominio: str, path_or_url: Optional[str]) -> Optional[str]:
+# ===== Helpers de URL absoluta (respeitam proxy/headers) =====
+def _origin_from_request(request: Request) -> str:
     """
-    Converte um path relativo ('/login', 'beta/pinacle') em
-    'https://{dominio}/{path}'. Se já for http(s), retorna como veio.
+    Retorna 'scheme://host[:port]' respeitando Forwarded / X-Forwarded-*.
+    """
+    hdr = request.headers
+    # 1) RFC 7239 Forwarded: proto=, host=
+    fwd = hdr.get("forwarded")
+    if fwd:
+        parts = {}
+        for item in fwd.split(";"):
+            for kv in item.split(","):
+                kv = kv.strip()
+                if "=" in kv:
+                    k, v = kv.split("=", 1)
+                    parts[k.lower()] = v.strip('"')
+        scheme = parts.get("proto") or parts.get("scheme")
+        host = parts.get("host")
+        if scheme and host:
+            return f"{scheme}://{host}"
+
+    # 2) Nginx/ELB clássicos
+    scheme = hdr.get("x-forwarded-proto") or request.url.scheme
+    host = hdr.get("x-forwarded-host") or hdr.get("host") or request.url.netloc
+    # Porta dedicada?
+    xf_port = hdr.get("x-forwarded-port")
+    if xf_port and ":" not in host:
+        host = f"{host}:{xf_port}"
+    return f"{scheme}://{host}"
+
+def _abs_from_request(request: Request, path_or_url: Optional[str]) -> Optional[str]:
+    """
+    Se 'path_or_url' já for http(s), retorna como veio.
+    Se for relativo, une com a origem detectada do request.
+    Garante que sempre comece com '/' quando relativo.
     """
     if not path_or_url:
         return None
@@ -98,9 +127,9 @@ def _abs_url(dominio: str, path_or_url: Optional[str]) -> Optional[str]:
         return p
     if not p.startswith("/"):
         p = "/" + p
-    return f"https://{dominio}{p}"
-# ========================================================================
-
+    origin = _origin_from_request(request)
+    return origin + p
+# ============================================================
 
 def create_app(mode: str = "all") -> FastAPI:
     docs_enabled = mode in ("public", "all", "write", "read")
@@ -153,7 +182,6 @@ def create_app(mode: str = "all") -> FastAPI:
         return dominio, estado, empresa, leaf
 
     def has_valid_jwt(request: Request) -> bool:
-        # Troque por sua verificação real (cookie/Authorization/JWT decode)
         auth = request.headers.get("authorization", "")
         return auth.lower().startswith("bearer ") and len(auth.split()) == 2
 
@@ -171,13 +199,18 @@ def create_app(mode: str = "all") -> FastAPI:
 
             need = precisa_logar(dominio, empresa_id, estado, leaf)
             if need is True and not has_valid_jwt(request):
-                login_url = url_login(dominio, empresa_id, estado)
-                dest = _abs_url(dominio, login_url) or "/"
-                # preserva o destino atual (path + query) no parâmetro next
-                next_target = str(request.url.path)
-                if request.url.query:
-                    next_target += f"?{request.url.query}"
-                return RedirectResponse(f"{dest}?next={next_target}", status_code=302)
+                login_rel = url_login(dominio, empresa_id, estado)  # pode vir relativo
+                login_abs = _abs_from_request(request, login_rel) or "/"
+
+                # monta next preservando query atual
+                split = urlsplit(str(request.url))
+                current_path = split.path
+                current_qs = split.query
+                next_param = current_path + (f"?{current_qs}" if current_qs else "")
+
+                # se o login já tiver query, usa '&', senão '?'
+                sep = "&" if ("?" in login_abs) else "?"
+                return RedirectResponse(f"{login_abs}{sep}next={next_param}", status_code=302)
 
             return await call_next(request)
 
@@ -187,13 +220,12 @@ def create_app(mode: str = "all") -> FastAPI:
     async def not_found_handler(request: Request, exc):
         dominio, estado, empresa_slug, _ = parse_url(request)
         if not empresa_slug:
-            return RedirectResponse(url=_abs_url(dominio, "/"), status_code=302)
+            return RedirectResponse(url=_abs_from_request(request, "/"), status_code=302)
         empresa_id = empresa_id_por_slug(empresa_slug)
         if not empresa_id:
-            return RedirectResponse(url=_abs_url(dominio, "/"), status_code=302)
-        dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
-        dest = _abs_url(dominio, dest_rel or "/")
-        return RedirectResponse(dest, status_code=302)
+            return RedirectResponse(url=_abs_from_request(request, "/"), status_code=302)
+        dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado) or "/"
+        return RedirectResponse(_abs_from_request(request, dest_rel), status_code=302)
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
     @app.get("/")
@@ -302,7 +334,6 @@ def create_app(mode: str = "all") -> FastAPI:
             logger.error("Erro ao fechar conexoes de banco", error=str(e))
 
     return app
-
 
 MODE = os.getenv("APP_MODE", "all")
 app = create_app(MODE)
