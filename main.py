@@ -17,7 +17,7 @@ else:
 
 import os
 import structlog
-from urllib.parse import urlsplit  # <-- ADICIONADO
+from urllib.parse import urlsplit, urlunsplit, urlencode, parse_qsl  # <-- ADICIONADO
 
 from config import settings
 from database import engine, Base
@@ -85,35 +85,55 @@ from services.fallback_helpers import (
 # ---------- Criação das tabelas ----------
 Base.metadata.create_all(bind=engine)
 
-# ============= Helpers seguros de URL absoluta (respeitam proxy) =============
-def _origin_from_request(request: Request) -> str:
+# ================= Helper robusto para montar o redirect =================
+def _absolute_redirect(
+    request: Request,
+    target: Optional[str],
+    append_next: Optional[str] = None,
+) -> str:
     """
-    Retorna 'scheme://host[:port]' usando X-Forwarded-* se presente.
-    Não depende de variáveis externas.
+    Constrói uma URL ABSOLUTA baseada no próprio request.
+    - Se 'target' for absoluto (http/https), apenas agrega o 'next' (se houver).
+    - Se 'target' for relativo, prefixa root_path (se existir) e usa request.url.replace().
     """
-    h = request.headers
-    scheme = (h.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
-    host = (h.get("x-forwarded-host") or h.get("host") or request.url.netloc).split(",")[0].strip()
-    # Se o proxy enviar X-Forwarded-Port e o host não tiver porta explícita:
-    xf_port = h.get("x-forwarded-port")
-    if xf_port and ":" not in host:
-        host = f"{host}:{xf_port.split(',')[0].strip()}"
-    return f"{scheme}://{host}"
+    if not target:
+        target = "/"
 
-def _abs_from_request(request: Request, path_or_url: Optional[str]) -> Optional[str]:
-    """
-    Se for http(s), retorna como veio. Se for relativo, prefixa com a origem real.
-    Garante que comece com '/' quando relativo.
-    """
-    if not path_or_url:
-        return None
-    p = str(path_or_url)
-    if p.startswith("http://") or p.startswith("https://"):
-        return p
-    if not p.startswith("/"):
-        p = "/" + p
-    return _origin_from_request(request) + p
-# ============================================================================
+    # Monta o valor do 'next' (path + query atuais), se solicitado
+    next_value = None
+    if append_next:
+        # usa exatamente o valor passado
+        next_value = append_next
+    else:
+        # por padrão, next = path atual + query
+        u = urlsplit(str(request.url))
+        next_value = u.path + (f"?{u.query}" if u.query else "")
+
+    if target.startswith("http://") or target.startswith("https://"):
+        # URL absoluta: só agregar 'next' sem quebrar query existente
+        u = urlsplit(target)
+        qs = dict(parse_qsl(u.query, keep_blank_values=True))
+        qs["next"] = next_value
+        new_query = urlencode(qs, doseq=True)
+        return urlunsplit((u.scheme, u.netloc, u.path, new_query, u.fragment))
+
+    # URL relativa: garantir "/" e prefixar root_path se houver
+    root_path = request.scope.get("root_path", "") or ""
+    if not target.startswith("/"):
+        target = "/" + target
+    # evita duplicar root_path se o target já começar com ele
+    if root_path and not target.startswith(root_path + "/") and target != root_path:
+        target_path = root_path + target
+    else:
+        target_path = target
+
+    # Reaproveita host/esquema do request e injeta path + query
+    u = urlsplit(str(request.url))
+    dest_qs = {"next": next_value}
+    new_query = urlencode(dest_qs, doseq=True)
+    return urlunsplit((u.scheme, u.netloc, target_path, new_query, ""))
+
+# ========================================================================
 
 def create_app(mode: str = "all") -> FastAPI:
     docs_enabled = mode in ("public", "all", "write", "read")
@@ -184,13 +204,9 @@ def create_app(mode: str = "all") -> FastAPI:
 
             need = precisa_logar(dominio, empresa_id, estado, leaf)
             if need is True and not has_valid_jwt(request):
-                login_url = url_login(dominio, empresa_id, estado)  # pode vir relativo
-                dest = _abs_from_request(request, login_url) or "/"
-                # preserva o destino atual (path + query) no parâmetro next
-                split = urlsplit(str(request.url))
-                next_target = split.path + (f"?{split.query}" if split.query else "")
-                sep = "&" if ("?" in dest) else "?"
-                return RedirectResponse(f"{dest}{sep}next={next_target}", status_code=302)
+                login_url = url_login(dominio, empresa_id, estado)  # relativo ou absoluto
+                dest = _absolute_redirect(request, login_url)
+                return RedirectResponse(dest, status_code=302)
 
             return await call_next(request)
 
@@ -200,13 +216,12 @@ def create_app(mode: str = "all") -> FastAPI:
     async def not_found_handler(request: Request, exc):
         dominio, estado, empresa_slug, _ = parse_url(request)
         if not empresa_slug:
-            return RedirectResponse(url=_abs_from_request(request, "/"), status_code=302)
+            return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
         empresa_id = empresa_id_por_slug(empresa_slug)
         if not empresa_id:
-            return RedirectResponse(url=_abs_from_request(request, "/"), status_code=302)
-        dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
-        dest = _abs_from_request(request, dest_rel or "/")
-        return RedirectResponse(dest, status_code=302)
+            return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
+        dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado) or "/"
+        return RedirectResponse(_absolute_redirect(request, dest_rel), status_code=302)
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
     @app.get("/")
