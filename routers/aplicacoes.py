@@ -221,7 +221,7 @@ def download_zip(
 
 
 # =========================================================
-#                       POST (criar)  — EXISTENTE
+#                       POST (criar)  — EXISTENTE (+ status em_andamento)
 # =========================================================
 @router.post("/criar", status_code=status.HTTP_201_CREATED)
 async def criar_aplicacao(
@@ -315,6 +315,24 @@ async def criar_aplicacao(
             "Falha ao inserir/substituir em global.aplicacoes: %s", db_error
         )
 
+    # ➕ Status da aplicação: marcar 'em_andamento' assim que criar
+    if db_saved and new_id is not None:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
+                        VALUES (:id, 'em_andamento', NULL)
+                        ON CONFLICT (aplicacao_id) DO UPDATE
+                          SET status = 'em_andamento',
+                              resumo_do_erro = NULL;
+                    """),
+                    {"id": new_id}
+                )
+        except Exception as e:
+            # não bloquear o fluxo de criação por causa do espelho de status
+            logging.getLogger("aplicacoes").warning("Falha ao registrar status em_andamento: %s", e)
+
     try:
         if removidos_ids:
             slug_remove = _deploy_slug(slug, estado)
@@ -357,7 +375,6 @@ class EditarAplicacaoBody(BaseModel):
     dominio: Optional[str] = None
     slug: Optional[str] = None
     estado: Optional[str] = None
-    # ❌ front_ou_back REMOVIDO (não pode mais ser alterado)
     id_empresa: Optional[int] = None
     precisa_logar: Optional[bool] = None
 
@@ -554,149 +571,3 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
         "github_action": {"workflow": "delete-landing", "slug_removed": slug_path},
         "apagado_no_banco": apagado_no_banco,
     }
-
-
-# =========================================================
-#         NOVO POST: criar apenas os "detalhes" extras
-# =========================================================
-@router.post(
-    "/criar-backend",
-    status_code=status.HTTP_201_CREATED,
-    summary="Cria um registro só com os campos de backend (arquivo + metadados). Não afeta deploy.",
-)
-async def criar_aplicacao_backend(
-    # arquivo opcional; se enviado, salva no BYTEA
-    arquivo: Optional[UploadFile] = File(None, description="Arquivo ZIP opcional (salvo em BYTEA)"),
-    front_ou_back: Optional[str] = Form(None, description="frontend|backend|fullstack"),
-    precisa_logar: Optional[bool] = Form(None, description="Se true, requer autenticação"),
-    anotacoes: Optional[str] = Form(None),
-    dados_de_entrada: Optional[List[str]] = Form(None),
-    tipos_de_retorno: Optional[List[str]] = Form(None),
-    rota: Optional[str] = Form(None),
-    porta: Optional[str] = Form(None),
-    servidor: Optional[str] = Form(None, description="teste 1|teste 2"),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Insere um registro na tabela `global.aplicacoes` preenchendo **apenas** os campos
-    solicitados. Demais colunas permanecem NULL. **Não dispara deploy**.
-    """
-    # valida enum(s)
-    if front_ou_back is not None and front_ou_back not in FRONTBACK_ENUM:
-        raise HTTPException(status_code=400, detail="front_ou_back inválido (frontend|backend|fullstack).")
-    _validate_servidor(servidor)
-
-    # lê arquivo se houver
-    data = None
-    if arquivo is not None:
-        data = await arquivo.read()
-
-    # insert simples (sem domínio/estado/slug/url)
-    with engine.begin() as conn:
-        row = conn.execute(
-            text("""
-                INSERT INTO global.aplicacoes
-                    (arquivo_zip,
-                     front_ou_back,
-                     precisa_logar,
-                     anotacoes,
-                     dados_de_entrada,
-                     tipos_de_retorno,
-                     rota,
-                     porta,
-                     servidor)
-                VALUES
-                    (:arquivo_zip,
-                     CAST(NULLIF(:fb, '') AS gestor_capitais.frontbackenum),
-                     :precisa_logar,
-                     :anotacoes,
-                     CAST(:dados_de_entrada AS text[]),
-                     CAST(:tipos_de_retorno AS text[]),
-                     :rota,
-                     :porta,
-                     CAST(NULLIF(:servidor, '') AS global.servidor_enum))
-                RETURNING id
-            """),
-            {
-                "arquivo_zip": data,
-                "fb": front_ou_back or "",
-                "precisa_logar": precisa_logar,
-                "anotacoes": anotacoes,
-                "dados_de_entrada": dados_de_entrada,
-                "tipos_de_retorno": tipos_de_retorno,
-                "rota": rota,
-                "porta": porta,
-                "servidor": servidor or "",
-            },
-        ).mappings().first()
-
-    return {"ok": True, "id": int(row["id"])}
-
-
-# =========================================================
-#        NOVO PUT: editar apenas campos TÉCNICOS (parcial)
-# =========================================================
-class EditarAplicacaoTecnicoBody(BaseModel):
-    id: int
-    rota: Optional[str] = None
-    porta: Optional[str] = None
-    servidor: Optional[str] = None  # global.servidor_enum
-    dados_de_entrada: Optional[List[str]] = None
-    tipos_de_retorno: Optional[List[str]] = None
-    anotacoes: Optional[str] = None
-    precisa_logar: Optional[bool] = None
-
-
-@router.put(
-    "/editar_tecnico",
-    summary="Editar campos técnicos (rota, porta, servidor, dados_de_entrada, tipos_de_retorno, anotacoes, precisa_logar).",
-)
-def editar_aplicacao_tecnico(
-    body: EditarAplicacaoTecnicoBody,
-    current_user: User = Depends(get_current_user),
-):
-    # Garante que existe
-    with engine.begin() as conn:
-        existe = conn.execute(
-            text("SELECT 1 FROM global.aplicacoes WHERE id = :id LIMIT 1"),
-            {"id": body.id},
-        ).scalar()
-    if not existe:
-        raise HTTPException(status_code=404, detail="Registro não encontrado.")
-
-    payload = body.model_dump(exclude_unset=True)
-    # valida enum quando presente
-    if "servidor" in payload:
-        _validate_servidor(payload.get("servidor"))
-
-    sets: List[str] = []
-    params: Dict[str, Any] = {"id": body.id}
-
-    def _add(col: str, expr: str, param_name: str):
-        sets.append(f"{col} = {expr}")
-        # None é aceito para limpar
-        params[param_name] = payload.get(param_name)
-
-    if "rota" in payload:
-        _add("rota", ":rota", "rota")
-    if "porta" in payload:
-        _add("porta", ":porta", "porta")
-    if "servidor" in payload:
-        _add("servidor", "CAST(NULLIF(:servidor, '') AS global.servidor_enum)", "servidor")
-    if "dados_de_entrada" in payload:
-        _add("dados_de_entrada", "CAST(:dados_de_entrada AS text[])", "dados_de_entrada")
-    if "tipos_de_retorno" in payload:
-        _add("tipos_de_retorno", "CAST(:tipos_de_retorno AS text[])", "tipos_de_retorno")
-    if "anotacoes" in payload:
-        _add("anotacoes", ":anotacoes", "anotacoes")
-    if "precisa_logar" in payload:
-        _add("precisa_logar", ":precisa_logar", "precisa_logar")
-
-    if not sets:
-        return {"ok": True, "id": body.id, "atualizado": False, "campos": []}
-
-    sql = f"UPDATE global.aplicacoes SET {', '.join(sets)} WHERE id = :id"
-    with engine.begin() as conn:
-        conn.execute(text(sql), params)
-
-    return {"ok": True, "id": body.id, "atualizado": True, "campos": list(payload.keys())}
