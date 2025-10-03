@@ -65,7 +65,7 @@ def _empresa_segment(conn, id_empresa: Optional[int]) -> Optional[str]:
         {"id": id_empresa},
     ).scalar()
     if not seg:
-        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+        raise HTTPException(status_code=404, detail="Empresa não encontrado.")
     return seg.strip() or None
 
 
@@ -90,7 +90,7 @@ def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
     """
     Caminho que o **workflow do Actions espera** (regex do workflow):
        "" | "beta" | "dev" | "beta/<slug>" | "dev/<slug>" | "<slug>"
-    NUNCA inclui empresa aqui. A empresa é enviada em input separado (id_empresa).
+    NUNCA inclui empresa aqui. A empresa é enviada separadamente via input 'empresa' (ou id).
     """
     if not estado or estado == "desativado":
         return None
@@ -280,6 +280,7 @@ async def criar_aplicacao(
     db_error = None
     new_id: Optional[int] = None
     removidos_ids: List[int] = []
+    empresa_seg: Optional[str] = None  # <— garantir escopo fora do try
 
     try:
         with engine.begin() as conn:
@@ -360,13 +361,13 @@ async def criar_aplicacao(
 
     # Disparar deploy/delete
     try:
-        # Deleta eventual versão anterior (usa slug clássico)
+        # Deleta eventual versão anterior (usa slug "clássico")
         if removidos_ids:
             old_path_remove = _deploy_slug(slug, estado)
             if old_path_remove is not None:
                 GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=old_path_remove or "")
 
-        # Deploy atual (slug clássico + id_empresa separado)
+        # Deploy atual (slug clássico + empresa enviada separadamente)
         estado_efetivo = estado or "producao"
         slug_deploy = _deploy_slug(slug, estado_efetivo)
         if slug_deploy is not None:
@@ -374,6 +375,7 @@ async def criar_aplicacao(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_url=zip_url,
+                empresa=empresa_seg,      # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO A EMPRESA
                 id_empresa=id_empresa,
             )
     except Exception as e:
@@ -526,6 +528,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
                 domain=new_dominio,
                 slug=new_slug_for_deploy or "",
                 zip_url=zip_url,
+                empresa=empresa_seg,          # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO A EMPRESA
                 id_empresa=new_id_empresa,
             )
         elif (not new_path_active) and old_path_active and (new_estado == "desativado"):
