@@ -9,14 +9,15 @@ FrontBackEnum = Literal["frontend", "backend", "fullstack"]
 EstadoEnum = Literal["producao", "beta", "dev", "desativado"]
 ServidorEnum = Literal["teste 1", "teste 2"]
 
+# Novo: reaproveitando o enum já existente no banco
+TipoDePaginaEnum = Literal["login", "nao_tem"]
+
 # ----------------- Base -----------------
 class AplicacaoBase(BaseModel):
-    # Todos opcionais para refletir NULL permitido no banco
     dominio: Optional[DominioEnum] = Field(
         None, description="Valor do enum global.dominio_enum"
     )
 
-    # Quando None, pode representar homepage por domínio/estado
     slug: Optional[str] = Field(
         None,
         pattern=r"^[a-z0-9-]{1,64}$",
@@ -26,7 +27,6 @@ class AplicacaoBase(BaseModel):
         ),
     )
 
-    # BYTEA e URL agora opcionais
     url_completa: Optional[str] = Field(
         None, description="URL completa calculada no backend (opcional)."
     )
@@ -42,12 +42,10 @@ class AplicacaoBase(BaseModel):
         None, description="FK opcional para global.empresas.id (ON DELETE SET NULL)."
     )
 
-    # Booleana aceita NULL no banco; mantemos default False se vier ausente
     precisa_logar: Optional[bool] = Field(
         None, description="Se true, requer autenticação/JWT para acesso."
     )
 
-    # ---------- Novos campos ----------
     anotacoes: Optional[str] = Field(None, description="Campo livre para anotações.")
     dados_de_entrada: Optional[List[str]] = Field(
         None, description="Lista de dados de entrada esperados (text[])."
@@ -61,15 +59,18 @@ class AplicacaoBase(BaseModel):
         None, description="Enum global.servidor_enum."
     )
 
+    # -------- Novo campo --------
+    desvio_caso: Optional[TipoDePaginaEnum] = Field(
+        None, description="Enum global.tipo_de_pagina_enum indicando caso de desvio."
+    )
+
 # ----------------- Create / Update -----------------
 class AplicacaoCreate(AplicacaoBase):
-    # bytes em Pydantic casa com BYTEA/LargeBinary no SQLAlchemy; agora opcional
     arquivo_zip: Optional[bytes] = Field(
         None, description="Arquivo ZIP (BYTEA) opcional."
     )
 
 class AplicacaoUpdate(AplicacaoBase):
-    # Para update, também opcional
     arquivo_zip: Optional[bytes] = Field(
         None, description="Arquivo ZIP (BYTEA) opcional para atualização."
     )
@@ -79,4 +80,4 @@ class AplicacaoOut(AplicacaoBase):
     id: int
 
     class Config:
-        from_attributes = True  # (Pydantic v2) substitui orm_mode=True
+        from_attributes = True  # (Pydantic v2)

@@ -61,7 +61,7 @@ servidor_enum = postgresql.ENUM(
     validate_strings=True,
 )
 
-# ===== Novo ENUM: tipo_api_enum (global) =====
+# ===== Enum já existente no banco: tipo_api_enum =====
 tipo_api_enum = postgresql.ENUM(
     "get",
     "post",
@@ -71,6 +71,17 @@ tipo_api_enum = postgresql.ENUM(
     "webhook",
     "websocket",
     name="tipo_api_enum",
+    schema="global",
+    create_type=False,
+    native_enum=True,
+    validate_strings=True,
+)
+
+# ===== Reaproveitando enum já existente: tipo_de_pagina_enum =====
+tipo_de_pagina_enum = postgresql.ENUM(
+    "login",
+    "nao_tem",
+    name="tipo_de_pagina_enum",
     schema="global",
     create_type=False,
     native_enum=True,
@@ -87,50 +98,41 @@ class Aplicacao(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # Agora todas as colunas (exceto id) permitem NULL
     dominio = Column(dominio_enum, nullable=True)
-
-    # slug pode ser NULL (homepage por domínio/estado)
     slug = Column(Text, nullable=True)
 
-    # BYTEA
     arquivo_zip = Column(LargeBinary, nullable=True)
-
     url_completa = Column(Text, nullable=True)
 
-    # ENUMs
-    front_ou_back = Column(frontback_enum, nullable=True)  # gestor_capitais.frontbackenum
-    estado = Column(estado_enum, nullable=True)            # global.estado_enum
+    front_ou_back = Column(frontback_enum, nullable=True)
+    estado = Column(estado_enum, nullable=True)
 
-    # FK para global.empresas(id) com ON DELETE SET NULL
     id_empresa = Column(
         Integer,
         ForeignKey("global.empresas.id", ondelete="SET NULL"),
         nullable=True,
     )
 
-    # Booleana (default false), porém aceita NULL no banco atual
     precisa_logar = Column(Boolean, nullable=True, server_default=text("false"))
 
-    # ===== Novas colunas =====
     anotacoes = Column(Text, nullable=True)
 
-    # Arrays de texto
     dados_de_entrada = Column(postgresql.ARRAY(Text), nullable=True)
     tipos_de_retorno = Column(postgresql.ARRAY(Text), nullable=True)
 
     rota = Column(Text, nullable=True)
     porta = Column(Text, nullable=True)
 
-    servidor = Column(servidor_enum, nullable=True)  # global.servidor_enum
+    servidor = Column(servidor_enum, nullable=True)
+    tipo_api = Column(tipo_api_enum, nullable=True)
 
-    # Novo campo ENUM com o tipo criado acima
-    tipo_api = Column(tipo_api_enum, nullable=True)  # global.tipo_api_enum
+    # ===== Nova coluna: reaproveitando o enum já existente =====
+    desvio_caso = Column(tipo_de_pagina_enum, nullable=True)  # global.tipo_de_pagina_enum
 
     def __repr__(self) -> str:
         return (
             f"<Aplicacao id={self.id} dominio={self.dominio} slug={self.slug} "
             f"front_ou_back={self.front_ou_back} estado={self.estado} "
             f"precisa_logar={self.precisa_logar} id_empresa={self.id_empresa} "
-            f"servidor={self.servidor} tipo_api={self.tipo_api}>"
+            f"servidor={self.servidor} tipo_api={self.tipo_api} desvio_caso={self.desvio_caso}>"
         )

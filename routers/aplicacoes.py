@@ -56,17 +56,30 @@ def _is_producao(estado: Optional[str]) -> bool:
 
 def _empresa_segment(conn, id_empresa: Optional[int]) -> Optional[str]:
     """
-    Retorna lower(nome) da empresa ou None se não informado.
+    Retorna o nome da empresa em formato de slug para URL:
+    - minúsculo
+    - espaços viram '-'
+    - remove/normaliza caracteres não [a-z0-9-]
+    - colapsa múltiplos '-' e tira '-' das pontas
     """
     if not id_empresa:
         return None
-    seg = conn.execute(
+
+    raw = conn.execute(
         text("SELECT lower(nome) FROM global.empresas WHERE id = :id LIMIT 1"),
         {"id": id_empresa},
     ).scalar()
-    if not seg:
+    if raw is None:
         raise HTTPException(status_code=404, detail="Empresa não encontrado.")
-    return seg.strip() or None
+
+    s = raw.strip().lower()
+    # troca espaços por "-" (o que você pediu) e normaliza um pouco pra URL
+    s = re.sub(r"\s+", "-", s)           # espaços -> '-'
+    s = re.sub(r"[^a-z0-9-]", "-", s)    # qualquer coisa fora de [a-z0-9-] -> '-'
+    s = re.sub(r"-{2,}", "-", s)         # colapsa múltiplos '-'
+    s = s.strip("-")                     # remove '-' do início/fim
+    return s or None
+
 
 
 def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str], empresa_seg: Optional[str]) -> str:
