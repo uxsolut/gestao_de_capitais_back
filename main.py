@@ -245,12 +245,12 @@ def create_app(mode: str = "all") -> FastAPI:
         if not empresa_id:
             return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
 
+        # >>>>>>> CORRIGIDO: usa SEMPRE o que vier de url_nao_tem(); se vier vazio, cai no root da empresa.
         dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
-        root_path_local = request.scope.get("root_path", "") or ""
-        if not dest_rel or _is_api_path(str(dest_rel), root_path_local):
+        if not dest_rel:
             dest_rel = _safe_company_root(estado, empresa_slug)
 
-        return RedirectResponse(_absolute_redirect(request, dest_rel or "/"), status_code=302)
+        return RedirectResponse(_absolute_redirect(request, dest_rel), status_code=302)
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
     @app.get("/")
