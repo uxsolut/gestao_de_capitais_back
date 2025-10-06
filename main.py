@@ -214,11 +214,26 @@ def create_app(mode: str = "all") -> FastAPI:
         """
         Retorna (dominio, estado, empresa_slug, slug)
         - estado: 'dev'|'beta'|None  (None = producao)
-        - empresa_slug: ex. 'pinacle' ou None
+        - empresa_slug: ex.: 'pinacle' ou None
         - slug: APENAS o primeiro segmento após a empresa (ou None)
+        Obs.: remove o root_path (ex.: /api) do começo do path antes de analisar.
         """
-        dominio = (request.url.hostname or "").lower()
-        parts = [p for p in request.url.path.split("/") if p]
+        # usa Host (se presente) para o domínio “real”
+        host_hdr = (request.headers.get("host") or "").split(":")[0].lower()
+        dominio = host_hdr or (request.url.hostname or "").lower()
+
+        raw_path = request.url.path or "/"
+        root_path_cfg = (request.scope.get("root_path") or "").rstrip("/")
+
+        # remove /api (ou o root_path configurado) do início do path
+        if root_path_cfg and raw_path.startswith(root_path_cfg + "/"):
+            path = raw_path[len(root_path_cfg):]
+        elif root_path_cfg and raw_path == root_path_cfg:
+            path = "/"
+        else:
+            path = raw_path
+
+        parts = [p for p in path.split("/") if p]
         estado = empresa = slug = None
         i = 0
         if len(parts) > 0 and parts[0] in ("dev", "beta"):
@@ -228,8 +243,9 @@ def create_app(mode: str = "all") -> FastAPI:
             empresa = parts[i]
             i += 1
         if len(parts) > i:
-            slug = parts[i]  # <- pega só o primeiro segmento
+            slug = parts[i]
         return dominio, estado, empresa, slug
+
 
     def has_valid_jwt(request: Request) -> bool:
         # Troque por sua verificação real (cookie/Authorization/JWT decode)
