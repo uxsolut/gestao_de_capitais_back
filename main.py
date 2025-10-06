@@ -202,7 +202,6 @@ def create_app(mode: str = "all") -> FastAPI:
             slug = parts[i]  # <- pega só o primeiro segmento
         return dominio, estado, empresa, slug
 
-
     def has_valid_jwt(request: Request) -> bool:
         # Troque por sua verificação real (cookie/Authorization/JWT decode)
         auth = request.headers.get("authorization", "")
@@ -210,6 +209,13 @@ def create_app(mode: str = "all") -> FastAPI:
 
     class AuthGateMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
+            # -------------------- BYPASS API/DOCS --------------------
+            path = request.url.path
+            root_path_local = (request.scope.get("root_path") or "")
+            if _is_api_path(path, root_path_local):
+                return await call_next(request)
+            # ---------------------------------------------------------
+
             dominio, estado, empresa_slug, leaf = parse_url(request)
 
             # ↓ Antes você exigia estado; agora checamos também produção (estado=None)
@@ -234,11 +240,17 @@ def create_app(mode: str = "all") -> FastAPI:
 
             return await call_next(request)
 
-
     app.add_middleware(AuthGateMiddleware)
 
     @app.exception_handler(404)
     async def not_found_handler(request: Request, exc):
+        # -------------------- BYPASS API/DOCS --------------------
+        path = request.url.path
+        root_path_local = (request.scope.get("root_path") or "")
+        if _is_api_path(path, root_path_local):
+            return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
+        # ---------------------------------------------------------
+
         dominio, estado, empresa_slug, _ = parse_url(request)
         if not empresa_slug:
             return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
