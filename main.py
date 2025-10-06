@@ -319,29 +319,32 @@ def create_app(mode: str = "all") -> FastAPI:
         path = request.url.path
         root_path_local = (request.scope.get("root_path") or "")
         if _is_api_path(path, root_path_local):
+            # Mantém docs funcionando
             return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
         # ---------------------------------------------------------
 
         dominio, estado, empresa_slug, _ = parse_url(request)
+
+        # sem empresa no path -> manda pro /
         if not empresa_slug:
-            # sem empresa no path -> manda pro /
             return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
 
-        # *** NÃO fazer early return se empresa_id for None ***
+        # >>> NÃO FAÇA early return se empresa_id for None <<<
         empresa_id = empresa_id_por_slug(empresa_slug)
 
-        # Usa SEMPRE a URL de 'nao_tem' do banco (aceita empresa_id=None)
-        dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
-        if not dest_rel:
+        # Usa SEMPRE a URL de 'nao_tem' do banco (aceita empresa_id=None e faz fallback de estado)
+        dest = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
+        if not dest:
             # fallback simpático: root da empresa/estado
-            dest_rel = _safe_company_root(estado, empresa_slug)
+            dest = _safe_company_root(estado, empresa_slug)
 
-        # Se a URL já é ABSOLUTA, não anexa ?next
-        if isinstance(dest_rel, str) and dest_rel.startswith(("http://", "https://")):
-            return RedirectResponse(dest_rel, status_code=302)
+        # Se o banco já trouxe URL ABSOLUTA, não anexa ?next=...
+        if isinstance(dest, str) and dest.startswith(("http://", "https://")):
+            return RedirectResponse(dest, status_code=302)
 
         # Caso seja RELATIVA, constrói absoluto e anexa ?next=...
-        return RedirectResponse(_absolute_redirect(request, dest_rel), status_code=302)
+        return RedirectResponse(_absolute_redirect(request, dest), status_code=302)
+
 
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
