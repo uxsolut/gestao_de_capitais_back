@@ -181,33 +181,59 @@ def create_app(mode: str = "all") -> FastAPI:
     )
 
 # --- DEBUG TEMPORÁRIO (pode remover depois) ---
+    # --- DEBUG: simular parse usando um path arbitrário ---
     @app.get("/__debug/parse")
     def __debug_parse(request: Request):
-        from services.fallback_helpers import empresa_id_por_slug, url_nao_tem
-        # Reaproveita a mesma lógica de parse_url que já existe no arquivo
-        uhost = (request.headers.get("host") or request.url.hostname or "").lower()
-        dominio, estado, empresa_slug, leaf = (lambda req: (
-            (req.url.hostname or "").lower(),
-            (lambda parts: parts[0] if parts and parts[0] in ("dev", "beta") else None)(
-                [p for p in req.url.path.split("/") if p]
-            ),
-            (lambda parts: parts[1] if len(parts) > 1 and parts[0] in ("dev", "beta")
-             else (parts[0] if parts else None))([p for p in req.url.path.split("/") if p]),
-            None
-        ))(request)
+        """
+        Use:
+          curl -s "http://127.0.0.1:8000/__debug/parse" \
+            -H 'Host: gestordecapitais.com' \
+            -H 'X-Debug-Path: /dev/pinacle/rota-inexistente'
+        """
+        # pega domínio preferindo Host do Nginx
+        host_hdr = (request.headers.get("host") or "").split(":")[0].lower()
+        dominio = host_hdr or (request.url.hostname or "").lower()
 
-        eid = empresa_id_por_slug(empresa_slug)
-        dest_rel = url_nao_tem(dominio=dominio, empresa_id=eid, estado=estado)
+        # permite SIMULAR o path
+        forced_path = request.headers.get("X-Debug-Path")
+        raw_path = forced_path or (request.url.path or "/")
+
+        # remove root_path do começo (mesma regra do parse_url)
+        root_path_cfg = (request.scope.get("root_path") or "").rstrip("/")
+        if root_path_cfg and raw_path.startswith(root_path_cfg + "/"):
+            path = raw_path[len(root_path_cfg):]
+        elif root_path_cfg and raw_path == root_path_cfg:
+            path = "/"
+        else:
+            path = raw_path
+
+        parts = [p for p in path.split("/") if p]
+        estado = empresa = slug = None
+        i = 0
+        if len(parts) > 0 and parts[0] in ("dev", "beta"):
+            estado = parts[0]; i = 1
+        if len(parts) > i:
+            empresa = parts[i]; i += 1
+        if len(parts) > i:
+            slug = parts[i]
+
+        # resolve empresa_id (igual ao fluxo real)
+        e_id = empresa_id_por_slug(empresa) if empresa else None
+
+        # tenta pegar a URL de 'nao_tem' exatamente como no 404 handler
+        url_fallback = url_nao_tem(dominio=dominio, empresa_id=e_id, estado=estado)
+
         return {
-            "host_header": uhost,
+            "host_header": host_hdr,
             "dominio": dominio,
             "estado": estado,
-            "empresa_slug": empresa_slug,
-            "empresa_id": eid,
-            "url_nao_tem": dest_rel,
-            "path": request.url.path,
+            "empresa_slug": empresa,
+            "empresa_id": e_id,
+            "url_nao_tem": url_fallback,
+            "path_usado": path,
+            "root_path": (request.scope.get("root_path") or "")
         }
-    # --- FIM DEBUG ---
+
 
     # ===================== FALLBACK SERVER-SIDE =====================
     def parse_url(request: Request) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
