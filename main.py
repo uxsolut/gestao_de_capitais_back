@@ -52,8 +52,6 @@ from routers import empresas as r_empresas
 from routers.miniapis import router as miniapis_router
 from routers import status_aplicacao  # <-- ADICIONADO
 
-from routers import desvio_rota_front  # <-- não precisamos mais do router
-
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
 
@@ -186,13 +184,13 @@ def create_app(mode: str = "all") -> FastAPI:
     def parse_url(request: Request) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
         """
         Retorna (dominio, estado, empresa_slug, slug)
-        - estado: 'dev'|'beta'|None
+        - estado: 'dev'|'beta'|None  (None = producao)
         - empresa_slug: ex. 'pinacle' ou None
-        - slug: parte após empresa (pode ser None)
+        - slug: APENAS o primeiro segmento após a empresa (ou None)
         """
         dominio = (request.url.hostname or "").lower()
         parts = [p for p in request.url.path.split("/") if p]
-        estado = empresa = leaf = None
+        estado = empresa = slug = None
         i = 0
         if len(parts) > 0 and parts[0] in ("dev", "beta"):
             estado = parts[0]
@@ -201,8 +199,9 @@ def create_app(mode: str = "all") -> FastAPI:
             empresa = parts[i]
             i += 1
         if len(parts) > i:
-            leaf = "/".join(parts[i:])
-        return dominio, estado, empresa, leaf
+            slug = parts[i]  # <- pega só o primeiro segmento
+        return dominio, estado, empresa, slug
+
 
     def has_valid_jwt(request: Request) -> bool:
         # Troque por sua verificação real (cookie/Authorization/JWT decode)
@@ -213,26 +212,28 @@ def create_app(mode: str = "all") -> FastAPI:
         async def dispatch(self, request: Request, call_next):
             dominio, estado, empresa_slug, leaf = parse_url(request)
 
-            # Login só se houver empresa e estado (login é por estado)
-            if not empresa_slug or not estado:
+            # ↓ Antes você exigia estado; agora checamos também produção (estado=None)
+            if not empresa_slug:
                 return await call_next(request)
 
             empresa_id = empresa_id_por_slug(empresa_slug)
             if not empresa_id:
                 return await call_next(request)
 
-            need = precisa_logar(dominio, empresa_id, estado, leaf)
+            need = precisa_logar(dominio, empresa_id, estado, leaf)  # helpers já fazem fallback p/ 'producao'
             if need is True and not has_valid_jwt(request):
-                login_url = url_login(dominio, empresa_id, estado)  # pode vir relativo/absoluto
-                # ---- GUARD: se o banco mandar algo da API, forçar login de front
+                login_url = url_login(dominio, empresa_id, estado)  # pode ser None/relativo/absoluto
+
+                # Guard: nunca mande p/ /api,/docs, etc.
                 root_path_local = request.scope.get("root_path", "") or ""
                 if not login_url or _is_api_path(str(login_url), root_path_local):
-                    login_url = _safe_login_path(estado, empresa_slug)
+                    login_url = _safe_login_path(estado, empresa_slug)  # lida com estado=None
 
                 dest = _absolute_redirect(request, login_url)
                 return RedirectResponse(dest, status_code=302)
 
             return await call_next(request)
+
 
     app.add_middleware(AuthGateMiddleware)
 
@@ -283,7 +284,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)  # <-- ADICIONADO
-        app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])
 
     elif mode == "all":
         app.include_router(ordens.router)
@@ -301,7 +301,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_ativos.router)
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)  # <-- ADICIONADO
-        app.include_router(desvio_rota_front.router, tags=["Desvio de Rota Front"])
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
