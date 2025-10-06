@@ -256,11 +256,10 @@ def create_app(mode: str = "all") -> FastAPI:
             # sem empresa no path -> manda pro /
             return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
 
-        # mesmo que a empresa não exista no cadastro, NÃO sai daqui:
-        # deixa empresa_id ser None para permitir fallback por dominio/estado em url_nao_tem()
+        # *** NÃO fazer early return se empresa_id for None ***
         empresa_id = empresa_id_por_slug(empresa_slug)
 
-        # Usa SEMPRE a URL do banco para 'nao_tem' (aceita empresa_id None)
+        # Usa SEMPRE a URL de 'nao_tem' do banco (aceita empresa_id=None)
         dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
         if not dest_rel:
             # fallback simpático: root da empresa/estado
@@ -272,6 +271,7 @@ def create_app(mode: str = "all") -> FastAPI:
 
         # Caso seja RELATIVA, constrói absoluto e anexa ?next=...
         return RedirectResponse(_absolute_redirect(request, dest_rel), status_code=302)
+
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
     @app.get("/")
