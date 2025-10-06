@@ -348,18 +348,6 @@ def create_app(mode: str = "all") -> FastAPI:
 
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
-# adicione junto dos outros @app.get
-    @app.get("/__debug/which")
-    def debug_which(request: Request):
-        import os
-        return {
-            "file": __file__,
-            "cwd": os.getcwd(),
-            "root_path": request.scope.get("root_path"),
-            "app_mode": os.getenv("APP_MODE"),
-        }
-
-
     @app.get("/")
     def read_root():
         return {"mensagem": "API online com sucesso!", "mode": mode, "root_path": root_path}
