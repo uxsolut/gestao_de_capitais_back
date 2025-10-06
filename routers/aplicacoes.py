@@ -355,22 +355,22 @@ async def criar_aplicacao(
         )
         url_full = None
 
-    # ➕ Status 'em_andamento'
+    # ➕ Status 'em andamento' (atualizado)
     if db_saved and new_id is not None:
         try:
             with engine.begin() as conn:
                 conn.execute(
                     text("""
                         INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
-                        VALUES (:id, 'em_andamento', NULL)
+                        VALUES (:id, 'em andamento', NULL)
                         ON CONFLICT (aplicacao_id) DO UPDATE
-                          SET status = 'em_andamento',
+                          SET status = 'em andamento',
                               resumo_do_erro = NULL;
                     """),
                     {"id": new_id}
                 )
         except Exception as e:
-            logging.getLogger("aplicacoes").warning("Falha ao registrar status em_andamento: %s", e)
+            logging.getLogger("aplicacoes").warning("Falha ao registrar status 'em andamento': %s", e)
 
     # Disparar deploy/delete
     try:
