@@ -304,7 +304,6 @@ def create_app(mode: str = "all") -> FastAPI:
 
             dominio, estado, empresa_slug, leaf = parse_url(request)
 
-            # ↓ Antes você exigia estado; agora checamos também produção (estado=None)
             if not empresa_slug:
                 return await call_next(request)
 
@@ -336,6 +335,91 @@ def create_app(mode: str = "all") -> FastAPI:
             return await call_next(request)
 
     app.add_middleware(AuthGateMiddleware)
+
+        # ========= ROOT DA EMPRESA (slug vazio) -> página slug NULL ou 'nao_tem' =========
+    def _fallback_estados_local(estado: Optional[str]):
+        return [estado, "producao"] if estado in ("dev", "beta") else ["producao"]
+
+    def _url_da_pagina_slug_null(dominio: str, empresa_id: Optional[int], estado: Optional[str]) -> Optional[str]:
+        from sqlalchemy import text
+        estados = _fallback_estados_local(estado)
+
+        # 1) tenta com empresa_id
+        if empresa_id is not None:
+            with engine.begin() as conn:
+                for est in estados:
+                    row = conn.execute(
+                        text("""
+                            SELECT a.url_completa
+                              FROM global.aplicacoes a
+                             WHERE a.dominio = :dominio
+                               AND a.id_empresa = :empresa_id
+                               AND a.estado = CAST(:estado AS global.estado_enum)
+                               AND a.slug IS NULL
+                             ORDER BY a.id DESC
+                             LIMIT 1
+                        """),
+                        {"dominio": dominio, "empresa_id": empresa_id, "estado": est},
+                    ).first()
+                    if row and row[0]:
+                        return row[0]
+
+        # 2) tenta sem empresa_id (barreira cai)
+        with engine.begin() as conn:
+            for est in estados:
+                row = conn.execute(
+                    text("""
+                        SELECT a.url_completa
+                          FROM global.aplicacoes a
+                         WHERE a.dominio = :dominio
+                           AND a.id_empresa IS NULL
+                           AND a.estado = CAST(:estado AS global.estado_enum)
+                           AND a.slug IS NULL
+                         ORDER BY a.id DESC
+                         LIMIT 1
+                    """),
+                    {"dominio": dominio, "estado": est},
+                ).first()
+                if row and row[0]:
+                    return row[0]
+        return None
+
+    @app.get("/{empresa_slug}", include_in_schema=False)
+    @app.get("/{empresa_slug}/", include_in_schema=False)
+    @app.get("/{estado}/{empresa_slug}", include_in_schema=False)
+    @app.get("/{estado}/{empresa_slug}/", include_in_schema=False)
+    async def empresa_root_catcher(request: Request, estado: Optional[str] = None, empresa_slug: Optional[str] = None):
+        # BYPASS para paths de API/DOCS
+        path = request.url.path
+        root_path_local = (request.scope.get("root_path") or "")
+        if _is_api_path(path, root_path_local):
+            return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
+
+        # Parseia de novo para honrar root_path e Host
+        dominio, estado_parsed, empresa_parsed, _ = parse_url(request)
+        estado = estado_parsed
+        empresa_slug = empresa_parsed
+
+        if not empresa_slug:
+            return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
+
+        empresa_id = empresa_id_por_slug(empresa_slug)
+
+        # 1) tenta página com slug NULL (página raiz)
+        dest = _url_da_pagina_slug_null(dominio=dominio, empresa_id=empresa_id, estado=estado)
+
+        # 2) se não houver, cai no 'nao_tem' (mesmo fluxo do 404)
+        if not dest:
+            dest = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
+            if not dest:
+                dest = _safe_company_root(estado, empresa_slug)
+
+        # 3) redireciona
+        if isinstance(dest, str) and dest.startswith(("http://", "https://")):
+            return RedirectResponse(dest, status_code=302)
+        return RedirectResponse(_absolute_redirect(request, dest), status_code=302)
+    # =================== FIM ROOT DA EMPRESA ===================
+
 
     @app.exception_handler(404)
     async def not_found_handler(request: Request, exc):
