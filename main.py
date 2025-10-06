@@ -316,13 +316,22 @@ def create_app(mode: str = "all") -> FastAPI:
             if need is True and not has_valid_jwt(request):
                 login_url = url_login(dominio, empresa_id, estado)  # pode ser None/relativo/absoluto
 
-                # Guard: nunca mande p/ /api,/docs, etc.
+                # Guard: nunca mande p/ /api,/docs etc.
                 root_path_local = request.scope.get("root_path", "") or ""
                 if not login_url or _is_api_path(str(login_url), root_path_local):
-                    login_url = _safe_login_path(estado, empresa_slug)  # lida com estado=None
+                    login_url = _safe_login_path(estado, empresa_slug)  # relativo seguro
 
-                dest = _absolute_redirect(request, login_url)
-                return RedirectResponse(dest, status_code=302)
+                # NUNCA anexar ?next no redirecionamento de login
+                if isinstance(login_url, str) and login_url.startswith(("http://", "https://")):
+                    # URL absoluta vinda do banco → usar como está
+                    return RedirectResponse(login_url, status_code=302)
+                else:
+                    # URL relativa → construir absoluta sem query
+                    from urllib.parse import urlsplit, urlunsplit
+                    u = urlsplit(str(request.url))
+                    path_abs = login_url if str(login_url).startswith("/") else f"/{login_url or ''}"
+                    dest_abs = urlunsplit((u.scheme, u.netloc, path_abs, "", ""))
+                    return RedirectResponse(dest_abs, status_code=302)
 
             return await call_next(request)
 
