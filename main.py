@@ -46,7 +46,7 @@ from routers import (
 )
 from routers import aplicacoes  # router de Aplicações
 from routers import tipo_de_ordem as r_tipo_de_ordem
-from routers import ativos como r_ativos  # se seu nome do arquivo é ativos.py
+from routers import ativos as r_ativos
 from routers import analises as r_analises
 from routers import empresas as r_empresas
 from routers.miniapis import router as miniapis_router
@@ -83,7 +83,7 @@ from services.fallback_helpers import (
 # ---------- Criação das tabelas ----------
 Base.metadata.create_all(bind=engine)
 
-# ================= Helpers de redirect =================
+# ================= Helper de redirect (IGNORA root_path) =================
 def _absolute_redirect(
     request: Request,
     target: Optional[str],
@@ -127,21 +127,6 @@ def _absolute_redirect(
     u = urlsplit(str(request.url))
     new_query = urlencode({"next": next_value}, doseq=True)
     return urlunsplit((u.scheme, u.netloc, target, new_query, ""))
-
-def _absolute_location(request: Request, target: Optional[str]) -> str:
-    """
-    Constrói URL ABSOLUTA sem anexar ?next=.
-    - Se 'target' for absoluto (http/https), retorna como está.
-    - Se for relativo, usa esquema/host do request (sem root_path).
-    """
-    if not target:
-        target = "/"
-    if target.startswith(("http://", "https://")):
-        return target
-    if not target.startswith("/"):
-        target = "/" + target
-    u = urlsplit(str(request.url))
-    return urlunsplit((u.scheme, u.netloc, target, "", ""))
 # ========================================================================
 
 # ======== Guards para não mandar ninguém para a API por engano =========
@@ -250,8 +235,7 @@ def create_app(mode: str = "all") -> FastAPI:
                 if not login_url or _is_api_path(str(login_url), root_path_local):
                     login_url = _safe_login_path(estado, empresa_slug)  # lida com estado=None
 
-                # ---- redireciona exatamente para a URL do banco (sem ?next=)
-                dest = _absolute_location(request, login_url)
+                dest = _absolute_redirect(request, login_url)
                 return RedirectResponse(dest, status_code=302)
 
             return await call_next(request)
@@ -274,13 +258,17 @@ def create_app(mode: str = "all") -> FastAPI:
         if not empresa_id:
             return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
 
-        # >>>>>>> Usa SEMPRE a URL de 'nao_tem' do banco; se não houver, cai na raiz da empresa.
+        # Usa SEMPRE a URL do banco para 'nao_tem'
         dest_rel = url_nao_tem(dominio=dominio, empresa_id=empresa_id, estado=estado)
         if not dest_rel:
             dest_rel = _safe_company_root(estado, empresa_slug)
 
-        # ---- redireciona exatamente para a URL do banco (sem ?next=)
-        return RedirectResponse(_absolute_location(request, dest_rel), status_code=302)
+        # >>> Se a URL já é absoluta, não anexar ?next=...
+        if isinstance(dest_rel, str) and dest_rel.startswith(("http://", "https://")):
+            return RedirectResponse(dest_rel, status_code=302)
+
+        # Caso contrário, construir absoluto e anexar ?next
+        return RedirectResponse(_absolute_redirect(request, dest_rel), status_code=302)
     # =================== FIM FALLBACK SERVER-SIDE ===================
 
     @app.get("/")
@@ -310,7 +298,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(miniapis_router)
         app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
-        app.include_router(r_ativos.router)
+        app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)  # <-- ADICIONADO
 
