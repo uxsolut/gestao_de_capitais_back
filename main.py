@@ -130,12 +130,27 @@ def _absolute_redirect(
 # ========================================================================
 
 # ======== Guards para não mandar ninguém para a API por engano =========
+# Substitua a função atual por esta
 def _is_api_path(p: str, root_path: str) -> bool:
+    """
+    Considera 'API/DOCS' somente se, após remover root_path do início do path,
+    o caminho começar com /api, /docs ou /openapi.
+    Isso evita marcar /api/dev/... (por causa do root_path) como 'API'.
+    """
     if not p:
         return False
-    return p.startswith("/api") or p.startswith("/openapi") or p.startswith("/docs") or (
-        bool(root_path) and p.startswith(root_path)
-    )
+
+    rp = (root_path or "").rstrip("/")
+    # strip do root_path do começo do path (se houver)
+    if rp and p.startswith(rp + "/"):
+        p_wo = p[len(rp):]
+    elif rp and p == rp:
+        p_wo = "/"
+    else:
+        p_wo = p
+
+    return p_wo.startswith("/api") or p_wo.startswith("/openapi") or p_wo.startswith("/docs")
+
 
 def _safe_login_path(estado: Optional[str], empresa: Optional[str]) -> str:
     if estado and empresa:
