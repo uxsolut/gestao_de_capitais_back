@@ -27,7 +27,7 @@ class AuditoriaService:
         Registra uma alteração no log de auditoria
         """
         try:
-            # Criar entrada de auditoria
+            
             log_entry = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "tabela": tabela,
