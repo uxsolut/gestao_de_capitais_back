@@ -180,6 +180,35 @@ def create_app(mode: str = "all") -> FastAPI:
         allow_headers=["*"],
     )
 
+# --- DEBUG TEMPORÁRIO (pode remover depois) ---
+    @app.get("/__debug/parse")
+    def __debug_parse(request: Request):
+        from services.fallback_helpers import empresa_id_por_slug, url_nao_tem
+        # Reaproveita a mesma lógica de parse_url que já existe no arquivo
+        uhost = (request.headers.get("host") or request.url.hostname or "").lower()
+        dominio, estado, empresa_slug, leaf = (lambda req: (
+            (req.url.hostname or "").lower(),
+            (lambda parts: parts[0] if parts and parts[0] in ("dev", "beta") else None)(
+                [p for p in req.url.path.split("/") if p]
+            ),
+            (lambda parts: parts[1] if len(parts) > 1 and parts[0] in ("dev", "beta")
+             else (parts[0] if parts else None))([p for p in req.url.path.split("/") if p]),
+            None
+        ))(request)
+
+        eid = empresa_id_por_slug(empresa_slug)
+        dest_rel = url_nao_tem(dominio=dominio, empresa_id=eid, estado=estado)
+        return {
+            "host_header": uhost,
+            "dominio": dominio,
+            "estado": estado,
+            "empresa_slug": empresa_slug,
+            "empresa_id": eid,
+            "url_nao_tem": dest_rel,
+            "path": request.url.path,
+        }
+    # --- FIM DEBUG ---
+
     # ===================== FALLBACK SERVER-SIDE =====================
     def parse_url(request: Request) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
         """
