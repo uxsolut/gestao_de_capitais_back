@@ -1,5 +1,6 @@
 # services/fallback_helpers.py
-from typing import Optional, Iterable, Tuple
+# -*- coding: utf-8 -*-
+from typing import Optional, Iterable, Tuple, List
 from sqlalchemy import text
 from database import engine
 
@@ -7,31 +8,48 @@ from database import engine
 # Helpers
 # ---------------------------------------------------------
 
-def _norm_empresa_slug_for_sql(slug: str) -> str:
+_DEVLIKE = {"dev", "beta"}
+
+def _norm_empresa_slug_for_sql(slug: Optional[str]) -> str:
     """
-    Mantém o slug recebido (ex.: 'gestao-de-capitais') para comparação.
+    Mantém o slug recebido (ex.: 'gestao-de-capitais') para comparação direta.
     """
     return (slug or "").strip().lower()
+
+def _estado_normalizado(estado: Optional[str]) -> str:
+    """
+    Normaliza o estado vindo da URL para ('dev'|'beta'|'producao').
+    Qualquer outro valor cai em 'producao'.
+    """
+    if not estado:
+        return "producao"
+    e = estado.strip().lower()
+    return e if e in _DEVLIKE or e == "producao" else "producao"
+
+def _fallback_estados(estado: Optional[str]) -> List[str]:
+    """
+    Ordem de fallback:
+      - se estado for 'dev' ou 'beta' -> ['dev|beta', 'producao']
+      - se 'producao'                 -> ['producao'] apenas
+    """
+    e = _estado_normalizado(estado)
+    return [e, "producao"] if e in _DEVLIKE else ["producao"]
 
 def empresa_id_por_slug(empresa_slug: Optional[str]) -> Optional[int]:
     """
     Resolve empresa pelo 'slug' da URL (ex.: 'gestao-de-capitais').
-    Tenta bater contra o nome da empresa (lower) 'slugificado' no SQL.
+    **Usa a coluna slug da tabela global.empresas** (mais correto que derivar de nome).
     """
     if not empresa_slug:
         return None
 
     slug = _norm_empresa_slug_for_sql(empresa_slug)
 
-    # Normalização no Postgres: lower(nome) -> troca qualquer sequência não [a-z0-9]+ por '-'
-    # Ex.: 'Gestão de Capitais S/A' -> 'gestao-de-capitais-s-a'
     sql = text("""
         SELECT id
-        FROM global.empresas
-        WHERE lower(
-                regexp_replace(nome, '[^a-z0-9]+', '-', 'g')
-              ) = :slug
-        LIMIT 1
+          FROM global.empresas
+         WHERE slug = :slug
+         LIMIT 1
     """)
     with engine.begin() as conn:
         row = conn.execute(sql, {"slug": slug}).first()
@@ -42,55 +60,65 @@ def _find_url_aplicacao_por_desvio(
     dominio: str,
     empresa_id: Optional[int],
     estado: Optional[str],
-    caso: str,  # valores do enum global.tipo_de_pagina_enum (ex.: 'login', 'nao_tem')
+    caso: str,  # valores do enum global.tipo_de_pagina_enum ('login' | 'nao_tem' | ...)
 ) -> Optional[str]:
     """
-    Procura em global.aplicacoes, usando apenas essa tabela, na seguinte ordem:
-      1) dominio + empresa_id + estado + desvio_caso
-      2) dominio + empresa_id + NULL   + desvio_caso
-      3) dominio + NULL       + estado + desvio_caso
-      4) dominio + NULL       + NULL   + desvio_caso
-    Retorna a url_completa da aplicação encontrada.
+    Procura em global.aplicacoes obedecendo:
+      - Tenta (dominio, empresa_id, estado)
+      - Se não achar e estado != 'producao', tenta (dominio, empresa_id, 'producao')
+      - Se ainda não achar, repete os dois passos acima com empresa_id = NULL (barreira por empresa cai)
     """
-    tries: Iterable[Tuple[Optional[int], Optional[str]]] = (
-        (empresa_id, estado),
-        (empresa_id, None),
-        (None, estado),
-        (None, None),
-    )
+    estados = _fallback_estados(estado)
 
     with engine.begin() as conn:
-        for e_id, est in tries:
+        # 1) Com empresa_id (se houver)
+        if empresa_id is not None:
+            for est in estados:
+                row = conn.execute(
+                    text("""
+                        SELECT a.url_completa
+                          FROM global.aplicacoes a
+                         WHERE a.dominio     = :dominio            -- coluna é TEXT
+                           AND a.desvio_caso = CAST(:caso AS global.tipo_de_pagina_enum)
+                           AND a.id_empresa  = :empresa_id
+                           AND a.estado      = CAST(:estado AS global.estado_enum)
+                         ORDER BY a.id DESC
+                         LIMIT 1
+                    """),
+                    {"dominio": dominio, "empresa_id": empresa_id, "estado": est, "caso": caso},
+                ).first()
+                if row and row[0]:
+                    return row[0]
+
+        # 2) Sem empresa_id (barreira cai)
+        for est in estados:
             row = conn.execute(
                 text("""
                     SELECT a.url_completa
                       FROM global.aplicacoes a
-                     WHERE a.dominio    = CAST(:dominio AS global.dominio_enum)
+                     WHERE a.dominio     = :dominio
                        AND a.desvio_caso = CAST(:caso AS global.tipo_de_pagina_enum)
-                       AND (a.id_empresa IS NOT DISTINCT FROM :empresa_id)
-                       AND (a.estado     IS NOT DISTINCT FROM CAST(:estado AS global.estado_enum))
-                  ORDER BY a.id DESC
+                       AND a.id_empresa IS NULL
+                       AND a.estado      = CAST(:estado AS global.estado_enum)
+                     ORDER BY a.id DESC
                      LIMIT 1
                 """),
-                {
-                    "dominio": dominio,
-                    "empresa_id": e_id,
-                    "estado": est,
-                    "caso": caso,
-                },
+                {"dominio": dominio, "estado": est, "caso": caso},
             ).first()
             if row and row[0]:
                 return row[0]
+
     return None
 
 # ---------------------------------------------------------
 # Funções usadas pelo main/middleware
 # ---------------------------------------------------------
 
-def url_nao_tem(dominio: str, empresa_id: int, estado: Optional[str]) -> Optional[str]:
+def url_nao_tem(dominio: str, empresa_id: Optional[int], estado: Optional[str]) -> Optional[str]:
     """
     Destino quando o slug/rota não existe: usa aplicacoes.desvio_caso = 'nao_tem'.
-    Busca na ordem de especificidade e retorna a url_completa.
+    Faz fallback do estado (dev/beta -> producao).
+    Aceita empresa_id None (cai barreira por empresa).
     """
     return _find_url_aplicacao_por_desvio(
         dominio=dominio,
@@ -99,10 +127,10 @@ def url_nao_tem(dominio: str, empresa_id: int, estado: Optional[str]) -> Optiona
         caso="nao_tem",
     )
 
-def url_login(dominio: str, empresa_id: int, estado: str) -> Optional[str]:
+def url_login(dominio: str, empresa_id: Optional[int], estado: Optional[str]) -> Optional[str]:
     """
     Destino de login quando precisa de autenticação: aplicacoes.desvio_caso = 'login'.
-    Tenta (dominio, empresa_id, estado) e fallbacks como descrito.
+    Mesmo fallback de estado e empresa.
     """
     return _find_url_aplicacao_por_desvio(
         dominio=dominio,
@@ -111,25 +139,57 @@ def url_login(dominio: str, empresa_id: int, estado: str) -> Optional[str]:
         caso="login",
     )
 
-def precisa_logar(dominio: str, empresa_id: int, estado: str, slug: Optional[str]) -> Optional[bool]:
+def precisa_logar(
+    dominio: str,
+    empresa_id: Optional[int],
+    estado: Optional[str],
+    slug: Optional[str],
+) -> Optional[bool]:
     """
-    Verifica em global.aplicacoes se a rota precisa de login.
-    Mantém a mesma consulta base que você já usava.
+    Verifica em global.aplicacoes se a rota (dominio, empresa, estado, slug) precisa de login.
+    Aplica fallback de estado: tenta estado pedido; se não achar e for dev/beta, tenta producao.
+    Retorna:
+      - True/False se achou um registro com 'precisa_logar' definido;
+      - None se não achou nenhum registro correspondente.
     """
-    sql = text("""
-        SELECT precisa_logar
-          FROM global.aplicacoes
-         WHERE dominio    = CAST(:dom AS global.dominio_enum)
-           AND id_empresa = :empresa_id
-           AND estado     = CAST(:estado AS global.estado_enum)
-           AND slug IS NOT DISTINCT FROM :slug
-         LIMIT 1
-    """)
+    estados = _fallback_estados(estado)
+
     with engine.begin() as conn:
-        row = conn.execute(sql, {
-            "dom": dominio,
-            "empresa_id": empresa_id,
-            "estado": estado,
-            "slug": slug,
-        }).first()
-        return None if not row else (None if row[0] is None else bool(row[0]))
+        # Com empresa_id (se houver)
+        if empresa_id is not None:
+            for est in estados:
+                row = conn.execute(
+                    text("""
+                        SELECT a.precisa_logar
+                          FROM global.aplicacoes a
+                         WHERE a.dominio = :dominio
+                           AND a.id_empresa = :empresa_id
+                           AND a.estado = CAST(:estado AS global.estado_enum)
+                           AND a.slug  IS NOT DISTINCT FROM :slug
+                         ORDER BY a.id DESC
+                         LIMIT 1
+                    """),
+                    {"dominio": dominio, "empresa_id": empresa_id, "estado": est, "slug": slug},
+                ).first()
+                if row is not None:
+                    return None if row[0] is None else bool(row[0])
+
+        # Sem empresa_id
+        for est in estados:
+            row = conn.execute(
+                text("""
+                    SELECT a.precisa_logar
+                      FROM global.aplicacoes a
+                     WHERE a.dominio = :dominio
+                       AND a.id_empresa IS NULL
+                       AND a.estado = CAST(:estado AS global.estado_enum)
+                       AND a.slug  IS NOT DISTINCT FROM :slug
+                     ORDER BY a.id DESC
+                     LIMIT 1
+                """),
+                {"dominio": dominio, "estado": est, "slug": slug},
+            ).first()
+            if row is not None:
+                return None if row[0] is None else bool(row[0])
+
+    return None
