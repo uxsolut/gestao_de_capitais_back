@@ -78,7 +78,7 @@ def _find_url_aplicacao_por_desvio(
                     text("""
                         SELECT a.url_completa
                           FROM global.aplicacoes a
-                         WHERE a.dominio     = :dominio            -- coluna é TEXT
+                         WHERE a.dominio::text = :dominio
                            AND a.desvio_caso = CAST(:caso AS global.tipo_de_pagina_enum)
                            AND a.id_empresa  = :empresa_id
                            AND a.estado      = CAST(:estado AS global.estado_enum)
@@ -96,7 +96,7 @@ def _find_url_aplicacao_por_desvio(
                 text("""
                     SELECT a.url_completa
                       FROM global.aplicacoes a
-                     WHERE a.dominio     = :dominio
+                     WHERE a.dominio::text = :dominio
                        AND a.desvio_caso = CAST(:caso AS global.tipo_de_pagina_enum)
                        AND a.id_empresa IS NULL
                        AND a.estado      = CAST(:estado AS global.estado_enum)
@@ -162,7 +162,7 @@ def precisa_logar(
                     text("""
                         SELECT a.precisa_logar
                           FROM global.aplicacoes a
-                         WHERE a.dominio = :dominio
+                         WHERE a.dominio::text = :dominio
                            AND a.id_empresa = :empresa_id
                            AND a.estado = CAST(:estado AS global.estado_enum)
                            AND a.slug  IS NOT DISTINCT FROM :slug
@@ -180,7 +180,7 @@ def precisa_logar(
                 text("""
                     SELECT a.precisa_logar
                       FROM global.aplicacoes a
-                     WHERE a.dominio = :dominio
+                     WHERE a.dominio::text = :dominio
                        AND a.id_empresa IS NULL
                        AND a.estado = CAST(:estado AS global.estado_enum)
                        AND a.slug  IS NOT DISTINCT FROM :slug
