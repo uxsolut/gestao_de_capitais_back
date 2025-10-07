@@ -390,6 +390,7 @@ async def criar_aplicacao(
                 zip_url=zip_url,
                 empresa=empresa_seg,      # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO A EMPRESA
                 id_empresa=id_empresa,
+                aplicacao_id=new_id,      # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO O APLICACAO_ID
             )
     except Exception as e:
         raise HTTPException(
@@ -543,6 +544,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
                 zip_url=zip_url,
                 empresa=empresa_seg,          # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO A EMPRESA
                 id_empresa=new_id_empresa,
+                aplicacao_id=body.id,         # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO O APLICACAO_ID
             )
         elif (not new_path_active) and old_path_active and (new_estado == "desativado"):
             old_slug_for_deploy = _deploy_slug(old_slug, old_estado)
