@@ -2,7 +2,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse  # <-- JSONResponse adicionado
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Optional, Tuple
@@ -130,26 +130,19 @@ def _absolute_redirect(
 # ========================================================================
 
 # ======== Guards para não mandar ninguém para a API por engano =========
-# Substitua a função atual por esta
 def _is_api_path(p: str, root_path: str) -> bool:
     """
-    Considera 'API/DOCS' somente se, após remover root_path do início do path,
-    o caminho começar com /api, /docs ou /openapi.
-    Isso evita marcar /api/dev/... (por causa do root_path) como 'API'.
+    Considera API/DOCS se o path ORIGINAL já começar pelo root_path configurado
+    (ex.: '/api') OU se for docs/openapi. Não remove root_path antes de checar.
     """
     if not p:
         return False
-
     rp = (root_path or "").rstrip("/")
-    # strip do root_path do começo do path (se houver)
-    if rp and p.startswith(rp + "/"):
-        p_wo = p[len(rp):]
-    elif rp and p == rp:
-        p_wo = "/"
-    else:
-        p_wo = p
-
-    return p_wo.startswith("/api") or p_wo.startswith("/openapi") or p_wo.startswith("/docs")
+    # Qualquer coisa sob o root_path é API
+    if rp and (p == rp or p.startswith(rp + "/")):
+        return True
+    # Também considere docs/openapi quando servidos sem root_path
+    return p.startswith("/api") or p.startswith("/openapi") or p.startswith("/docs")
 
 
 def _safe_login_path(estado: Optional[str], empresa: Optional[str]) -> str:
@@ -427,8 +420,8 @@ def create_app(mode: str = "all") -> FastAPI:
         path = request.url.path
         root_path_local = (request.scope.get("root_path") or "")
         if _is_api_path(path, root_path_local):
-            # Mantém docs funcionando
-            return RedirectResponse(url=_absolute_redirect(request, "/"), status_code=302)
+            # Para rotas de API, devolve 404 JSON (sem redirecionar)
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
         # ---------------------------------------------------------
 
         dominio, estado, empresa_slug, _ = parse_url(request)
