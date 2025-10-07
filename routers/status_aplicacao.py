@@ -1,6 +1,7 @@
 # routers/status_aplicacao.py
 # -*- coding: utf-8 -*-
 from typing import Optional
+import unicodedata
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, field_validator
@@ -26,23 +27,32 @@ _MAP_STATUS = {
     "emandamento": "em andamento",
 
     # concluído
-    "concluido": "concluído",   # sem acento -> com acento
+    "concluido": "concluído",       # sem acento -> com acento
     "concluído": "concluído",
-    "concluido.": "concluído",  # casos com ruído
+    "concluido.": "concluído",      # ruídos comuns
     "concluido ": "concluído",
 
-    # falhou / cancelado (iguais)
+    # falhou / cancelado
     "falhou": "falhou",
     "cancelado": "cancelado",
 }
 
+def _nfc_strip(s: str) -> str:
+    """Normaliza para NFC, remove invisíveis e espaços nas pontas."""
+    if s is None:
+        return s
+    # normaliza e tira zero-width e similares
+    s = unicodedata.normalize("NFC", s)
+    s = s.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
+    return s.strip()
+
 def _normalize_status(raw: str) -> str:
     if raw is None:
         raise ValueError("status ausente")
-    key = raw.strip().lower()
+    key = _nfc_strip(raw).lower()
     # tira aspas acidentais
     if key.startswith('"') and key.endswith('"') and len(key) >= 2:
-        key = key[1:-1].strip()
+        key = _nfc_strip(key[1:-1])
     norm = _MAP_STATUS.get(key)
     if not norm:
         raise ValueError(
@@ -57,7 +67,7 @@ def _require_bearer(auth_header: Optional[str]):
     if not token_cfg:
         raise HTTPException(500, "BACKEND_BOT_TOKEN não configurado")
     if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(401, "Bearer token ausente")
+        raise HTTPException(401, "Bearer ausente")
     if auth_header.split(" ", 1)[1].strip() != token_cfg:
         raise HTTPException(403, "Token inválido")
 
@@ -96,8 +106,10 @@ def atualizar_status(
 
     # 2) normaliza resumo (só guarda quando falhou)
     resumo = body.resumo_do_erro if body.status == "falhou" else None
-    if resumo and len(resumo) > 8000:
-        resumo = resumo[-8000:]
+    if resumo:
+        resumo = _nfc_strip(resumo)
+        if len(resumo) > 8000:
+            resumo = resumo[-8000:]
 
     # 3) upsert no status (gravando NA FORMA CANÔNICA DO BANCO)
     if body.status not in _CANONICOS_DB:
