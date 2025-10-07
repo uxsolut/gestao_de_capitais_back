@@ -352,7 +352,7 @@ def create_app(mode: str = "all") -> FastAPI:
                         text("""
                             SELECT a.url_completa
                               FROM global.aplicacoes a
-                             WHERE a.dominio = :dominio
+                             WHERE a.dominio::text = :dominio
                                AND a.id_empresa = :empresa_id
                                AND a.estado = CAST(:estado AS global.estado_enum)
                                AND a.slug IS NULL
@@ -371,7 +371,7 @@ def create_app(mode: str = "all") -> FastAPI:
                     text("""
                         SELECT a.url_completa
                           FROM global.aplicacoes a
-                         WHERE a.dominio = :dominio
+                         WHERE a.dominio::text = :dominio
                            AND a.id_empresa IS NULL
                            AND a.estado = CAST(:estado AS global.estado_enum)
                            AND a.slug IS NULL
