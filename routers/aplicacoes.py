@@ -581,7 +581,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     }
 
 
-# ======================= DELETE (por id) — INALTERADO =======================
+# ======================= DELETE (por id) — INALTERADO ======================
 class DeleteBody(BaseModel):
     id: int
 
