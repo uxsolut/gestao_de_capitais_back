@@ -25,6 +25,13 @@ router = APIRouter(prefix="/aplicacoes", tags=["Aplicações"])
 BASE_UPLOADS_DIR = os.getenv("BASE_UPLOADS_DIR", "/var/www/uploads")
 BASE_UPLOADS_URL = os.getenv("BASE_UPLOADS_URL")  # ex.: https://gestordecapitais.com/uploads
 
+# >>> Base da API que o GitHub Actions deve chamar para atualizar status
+API_BASE_FOR_ACTIONS = (
+    os.getenv("ACTIONS_API_BASE")
+    or os.getenv("API_BASE_FOR_ACTIONS")
+    or os.getenv("API_BASE")
+)
+
 # Valores válidos (iguais aos ENUMs no Postgres)
 DOMINIO_ENUM = {"pinacle.com.br", "gestordecapitais.com", "tetramusic.com.br"}
 FRONTBACK_ENUM = {"frontend", "backend", "fullstack"}
@@ -391,6 +398,7 @@ async def criar_aplicacao(
                 empresa=empresa_seg,      # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO A EMPRESA
                 id_empresa=id_empresa,
                 aplicacao_id=new_id,      # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO O APLICACAO_ID
+                api_base=API_BASE_FOR_ACTIONS,  # <<<<<<<<<<<<<<<<<<< ENVIANDO A BASE DA API
             )
     except Exception as e:
         raise HTTPException(
@@ -545,6 +553,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
                 empresa=empresa_seg,          # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO A EMPRESA
                 id_empresa=new_id_empresa,
                 aplicacao_id=body.id,         # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO O APLICACAO_ID
+                api_base=API_BASE_FOR_ACTIONS,  # <<<<<<<<<<<<<<<<<<< ENVIANDO A BASE DA API
             )
         elif (not new_path_active) and old_path_active and (new_estado == "desativado"):
             old_slug_for_deploy = _deploy_slug(old_slug, old_estado)
