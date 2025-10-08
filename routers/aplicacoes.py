@@ -617,7 +617,7 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
 
 
 # ========================================================================
-#   🔵 NOVO 1) POST /aplicacoes/registrar — SALVA O ZIP E DESATIVA CONFLITOS
+#        🔵 NOVO 1) POST /aplicacoes/registrar — SALVA O ZIP NO BANCO
 # ========================================================================
 @router.post(
     "/registrar",
@@ -643,76 +643,62 @@ async def registrar_aplicacao(
     if not data:
         raise HTTPException(status_code=400, detail="arquivo_zip vazio.")
 
-    removidos_ids: List[int] = []
+    with engine.begin() as conn:
+        empresa_seg = _empresa_segment(conn, id_empresa)
+        url_full = _canonical_url(dominio, estado, slug, empresa_seg)
 
-    try:
-        with engine.begin() as conn:
-            empresa_seg = _empresa_segment(conn, id_empresa)
-            url_full = _canonical_url(dominio, estado, slug, empresa_seg)
-
-            # Desativa conflitos prévios (mesma regra do 'criar')
-            if estado in {"producao", "beta", "dev"}:
-                res = conn.execute(
-                    text("""
-                        UPDATE global.aplicacoes
-                           SET estado = 'desativado'::global.estado_enum,
-                               updated_at = now()
-                         WHERE dominio = CAST(:dom AS global.dominio_enum)
-                           AND slug IS NOT DISTINCT FROM :slug
-                           AND estado  = CAST(:est AS global.estado_enum)
-                        RETURNING id
-                    """),
-                    {"dom": dominio, "slug": slug, "est": estado},
-                )
-                removidos_ids = [r[0] for r in res.fetchall()]
-
-            # Insere nova aplicação salvando o ZIP no bytea
-            new_id = conn.execute(
-                text("""
-                    INSERT INTO global.aplicacoes
-                        (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado, id_empresa, anotacoes)
-                    VALUES
-                        (CAST(:dominio AS global.dominio_enum),
-                         :slug,
-                         :arquivo_zip,
-                         :url_completa,
-                         CAST(NULLIF(:front_ou_back, '') AS gestor_capitais.frontbackenum),
-                         CAST(NULLIF(:estado, '')        AS global.estado_enum),
-                         :id_empresa,
-                         :anotacoes)
-                    RETURNING id
-                """),
-                {
-                    "dominio": dominio,
-                    "slug": slug,
-                    "arquivo_zip": data,
-                    "url_completa": url_full,
-                    "front_ou_back": front_ou_back or "",
-                    "estado": estado or "",
-                    "id_empresa": id_empresa,
-                    "anotacoes": anotacoes,
-                },
-            ).scalar_one()
-
-            # Status 'preparando'
+        # 👇 DESATIVA CONFLITOS EXATAMENTE COMO NO /criar
+        if estado in {"producao", "beta", "dev"}:
             conn.execute(
                 text("""
-                    INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
-                    VALUES (:id, 'preparando', NULL)
-                    ON CONFLICT (aplicacao_id) DO UPDATE
-                      SET status = 'preparando',
-                          resumo_do_erro = NULL,
-                          updated_at = now();
+                    UPDATE global.aplicacoes
+                       SET estado = 'desativado'::global.estado_enum
+                     WHERE dominio = CAST(:dom AS global.dominio_enum)
+                       AND slug IS NOT DISTINCT FROM :slug
+                       AND estado  = CAST(:est AS global.estado_enum)
                 """),
-                {"id": int(new_id)},
+                {"dom": dominio, "slug": slug, "est": estado},
             )
 
-    except Exception as e:
-        err = f"{e.__class__.__name__}: {e}"
-        logging.getLogger("aplicacoes").warning("Falha ao registrar em global.aplicacoes: %s", err)
-        raise HTTPException(status_code=500, detail=f"Erro interno do servidor: {err}")
+        new_id = conn.execute(
+            text("""
+                INSERT INTO global.aplicacoes
+                    (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado, id_empresa, anotacoes)
+                VALUES
+                    (CAST(:dominio AS global.dominio_enum),
+                     :slug,
+                     :arquivo_zip,                -- << salva o ZIP no bytea
+                     :url_completa,
+                     CAST(NULLIF(:front_ou_back, '') AS gestor_capitais.frontbackenum),
+                     CAST(NULLIF(:estado, '')        AS global.estado_enum),
+                     :id_empresa,
+                     :anotacoes)
+                RETURNING id
+            """),
+            {
+                "dominio": dominio,
+                "slug": slug,
+                "arquivo_zip": data,
+                "url_completa": url_full,
+                "front_ou_back": front_ou_back or "",
+                "estado": estado or "",
+                "id_empresa": id_empresa,
+                "anotacoes": anotacoes,
+            },
+        ).scalar_one()
 
-    # Não dispara deploy aqui
+        # status = "preparando"
+        conn.execute(
+            text("""
+                INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
+                VALUES (:id, 'preparando', NULL)
+                ON CONFLICT (aplicacao_id) DO UPDATE
+                  SET status = 'preparando',
+                      resumo_do_erro = NULL
+            """),
+            {"id": new_id},
+        )
+
     return {
         "ok": True,
         "id": int(new_id),
@@ -721,10 +707,9 @@ async def registrar_aplicacao(
         "estado": estado,
         "id_empresa": id_empresa,
         "status_inicial": "preparando",
-        "url": _canonical_url(dominio, estado, slug, None) if 'url_full' not in locals() else url_full,
+        "url": url_full,
         "front_ou_back": front_ou_back,
         "anotacoes": anotacoes,
-        "desativados_ids": removidos_ids or [],
     }
 
 
