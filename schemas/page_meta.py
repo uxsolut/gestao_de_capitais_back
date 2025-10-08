@@ -1,8 +1,10 @@
 # schemas/page_meta.py
 # -*- coding: utf-8 -*-
 import re
-from typing import Any, Dict, Optional
-from pydantic import BaseModel, field_validator
+from typing import Any, Dict
+from pydantic import BaseModel
+
+_LANG_RE = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*")
 
 class PageMetaBase(BaseModel):
     rota: str = "/"
@@ -17,22 +19,7 @@ class PageMetaBase(BaseModel):
     alternates: Dict[str, Any] = {}
     extras: Dict[str, Any] = {}
 
-    @field_validator("rota")
-    @classmethod
-    def _rota_ok(cls, v: str) -> str:
-        v = (v or "").strip()
-        if v != "*" and not v.startswith("/"):
-            raise ValueError("rota deve começar com '/' ou ser '*'")
-        return v
-
-    @field_validator("lang_tag")
-    @classmethod
-    def _lang_ok(cls, v: str) -> str:
-        v = (v or "").strip()
-        # BCP47 simplificado (ex.: pt, pt-BR, en-US)
-        if not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*", v):
-            raise ValueError("lang_tag inválido (use BCP47, ex.: 'pt-BR')")
-        return v
+    # Validaremos rota/lang_tag no router para evitar dependência de decorators de versão
 
 class PageMetaCreate(PageMetaBase):
     pass
@@ -42,4 +29,6 @@ class PageMetaOut(PageMetaBase):
     aplicacao_id: int
 
     class Config:
+        # v1: orm_mode; v2: from_attributes
+        orm_mode = True
         from_attributes = True

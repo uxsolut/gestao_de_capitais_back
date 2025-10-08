@@ -1,9 +1,9 @@
 # routers/page_meta.py
 # -*- coding: utf-8 -*-
-from typing import List, Optional
+import re
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
 from sqlalchemy import text
-from sqlalchemy.engine import Result
 
 from database import engine
 from auth.dependencies import get_current_user
@@ -12,15 +12,22 @@ from schemas.page_meta import PageMetaCreate, PageMetaOut
 
 router = APIRouter(prefix="/aplicacoes", tags=["Page Meta"])
 
-# -------- helpers ----------
+_LANG_RE = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*")
+
 def _app_exists(aplicacao_id: int) -> bool:
     with engine.begin() as conn:
-        return bool(
-            conn.execute(
-                text("SELECT 1 FROM global.aplicacoes WHERE id = :id LIMIT 1"),
-                {"id": aplicacao_id},
-            ).scalar()
-        )
+        return bool(conn.execute(
+            text("SELECT 1 FROM global.aplicacoes WHERE id = :id LIMIT 1"),
+            {"id": aplicacao_id},
+        ).scalar())
+
+def _validate_inputs(rota: str, lang_tag: str):
+    rota = (rota or "").strip()
+    lang_tag = (lang_tag or "").strip()
+    if rota != "*" and not rota.startswith("/"):
+        raise HTTPException(status_code=400, detail="rota deve começar com '/' ou ser '*'")
+    if not _LANG_RE.fullmatch(lang_tag):
+        raise HTTPException(status_code=400, detail="lang_tag inválido (use BCP47, ex.: 'pt-BR')")
 
 def _row_to_out(row) -> PageMetaOut:
     return PageMetaOut(
@@ -39,12 +46,11 @@ def _row_to_out(row) -> PageMetaOut:
         extras=row["extras"],
     )
 
-# -------- POST (UPSERT) ----------
 @router.post(
     "/{aplicacao_id}/page-meta",
     response_model=PageMetaOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Cria/atualiza SEO/metadata da página (chave: aplicacao_id + rota + lang_tag)",
+    summary="Cria/atualiza SEO/metadata (UPSERT por aplicacao_id + rota + lang_tag)",
 )
 def upsert_page_meta(
     aplicacao_id: int,
@@ -53,6 +59,7 @@ def upsert_page_meta(
 ):
     if not _app_exists(aplicacao_id):
         raise HTTPException(status_code=404, detail="Aplicação não encontrada.")
+    _validate_inputs(body.rota, body.lang_tag)
 
     with engine.begin() as conn:
         row = conn.execute(
@@ -87,8 +94,8 @@ def upsert_page_meta(
             """),
             {
                 "aplicacao_id": aplicacao_id,
-                "rota": body.rota,
-                "lang_tag": body.lang_tag,
+                "rota": body.rota.strip(),
+                "lang_tag": body.lang_tag.strip(),
                 "basic_meta": body.basic_meta,
                 "social_og": body.social_og,
                 "twitter_meta": body.twitter_meta,
@@ -103,19 +110,14 @@ def upsert_page_meta(
 
     return _row_to_out(row)
 
-# -------- GET: listar por aplicação ----------
 @router.get(
     "/{aplicacao_id}/page-meta",
     response_model=List[PageMetaOut],
     summary="Lista todas as entradas de page_meta de uma aplicação",
 )
-def list_page_meta(
-    aplicacao_id: int,
-    current_user: User = Depends(get_current_user),
-):
+def list_page_meta(aplicacao_id: int, current_user: User = Depends(get_current_user)):
     if not _app_exists(aplicacao_id):
         raise HTTPException(status_code=404, detail="Aplicação não encontrada.")
-
     with engine.begin() as conn:
         rows = conn.execute(
             text("""
@@ -129,10 +131,8 @@ def list_page_meta(
             """),
             {"aplicacao_id": aplicacao_id},
         ).mappings().all()
-
     return [_row_to_out(r) for r in rows]
 
-# -------- GET: pegar 1 por chave (rota + lang_tag) ----------
 @router.get(
     "/{aplicacao_id}/page-meta/one",
     response_model=PageMetaOut,
@@ -146,6 +146,7 @@ def get_one_page_meta(
 ):
     if not _app_exists(aplicacao_id):
         raise HTTPException(status_code=404, detail="Aplicação não encontrada.")
+    _validate_inputs(rota, lang_tag)
 
     with engine.begin() as conn:
         row = conn.execute(
@@ -160,15 +161,12 @@ def get_one_page_meta(
                    AND lang_tag = :lang_tag
                  LIMIT 1
             """),
-            {"aplicacao_id": aplicacao_id, "rota": rota, "lang_tag": lang_tag},
+            {"aplicacao_id": aplicacao_id, "rota": rota.strip(), "lang_tag": lang_tag.strip()},
         ).mappings().first()
-
     if not row:
         raise HTTPException(status_code=404, detail="Metadata não encontrada para essa rota/lang.")
-
     return _row_to_out(row)
 
-# -------- DELETE: por chave ----------
 @router.delete(
     "/{aplicacao_id}/page-meta",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -182,6 +180,7 @@ def delete_page_meta(
 ):
     if not _app_exists(aplicacao_id):
         raise HTTPException(status_code=404, detail="Aplicação não encontrada.")
+    _validate_inputs(rota, lang_tag)
 
     with engine.begin() as conn:
         res = conn.execute(
@@ -191,7 +190,7 @@ def delete_page_meta(
                    AND rota = :rota
                    AND lang_tag = :lang_tag
             """),
-            {"aplicacao_id": aplicacao_id, "rota": rota, "lang_tag": lang_tag},
+            {"aplicacao_id": aplicacao_id, "rota": rota.strip(), "lang_tag": lang_tag.strip()},
         )
         if (res.rowcount or 0) == 0:
             raise HTTPException(status_code=404, detail="Nada para remover.")
