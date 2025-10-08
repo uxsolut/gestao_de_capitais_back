@@ -21,6 +21,7 @@ from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401
 from models import ordens as m_ordens  # noqa: F401
 from models import aplicacoes as m_aplicacoes  # noqa: F401
 from models import empresas as m_empresas  # noqa: F401
+from models import page_meta as m_page_meta
 
 # --- Routers da aplicação ---
 from routers import (
@@ -41,6 +42,7 @@ from routers import analises as r_analises
 from routers import empresas as r_empresas
 from routers.miniapis import router as miniapis_router
 from routers import status_aplicacao  # status da aplicação
+from routers import page_meta as r_page_meta
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -142,6 +144,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_ativos.router, tags=["Ativos"])
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)
+        app.include_router(r_page_meta.router, tags=["Page Meta"])
 
     elif mode == "all":
         app.include_router(ordens.router)
@@ -159,6 +162,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_ativos.router)
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)
+        app.include_router(r_page_meta.router, tags=["Page Meta"])
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
