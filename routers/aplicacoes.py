@@ -62,16 +62,8 @@ def _is_producao(estado: Optional[str]) -> bool:
 
 
 def _empresa_segment(conn, id_empresa: Optional[int]) -> Optional[str]:
-    """
-    Retorna o nome da empresa em formato de slug para URL:
-    - minúsculo
-    - espaços viram '-'
-    - remove/normaliza caracteres não [a-z0-9-]
-    - colapsa múltiplos '-' e tira '-' das pontas
-    """
     if not id_empresa:
         return None
-
     raw = conn.execute(
         text("SELECT lower(nome) FROM global.empresas WHERE id = :id LIMIT 1"),
         {"id": id_empresa},
@@ -80,21 +72,14 @@ def _empresa_segment(conn, id_empresa: Optional[int]) -> Optional[str]:
         raise HTTPException(status_code=404, detail="Empresa não encontrado.")
 
     s = raw.strip().lower()
-    # troca espaços por "-" (o que você pediu) e normaliza um pouco pra URL
-    s = re.sub(r"\s+", "-", s)           # espaços -> '-'
-    s = re.sub(r"[^a-z0-9-]", "-", s)    # qualquer coisa fora de [a-z0-9-] -> '-'
-    s = re.sub(r"-{2,}", "-", s)         # colapsa múltiplos '-'
-    s = s.strip("-")                     # remove '-' do início/fim
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^a-z0-9-]", "-", s)
+    s = re.sub(r"-{2,}", "-", s)
+    s = s.strip("-")
     return s or None
 
 
-
 def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str], empresa_seg: Optional[str]) -> str:
-    """
-    Monta URL visível/publicada com empresa no meio:
-    - prod:            /<empresa?>/<slug?>
-    - dev/beta:  /<estado>/<empresa?>/<slug?>
-    """
     base = f"https://{dominio}".rstrip("/")
     parts: List[str] = []
     if estado and not _is_producao(estado):
@@ -107,11 +92,6 @@ def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str], emp
 
 
 def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
-    """
-    Caminho que o **workflow do Actions espera** (regex do workflow):
-       "" | "beta" | "dev" | "beta/<slug>" | "dev/<slug>" | "<slug>"
-    NUNCA inclui empresa aqui. A empresa é enviada separadamente via input 'empresa' (ou id).
-    """
     if not estado or estado == "desativado":
         return None
     if estado == "producao":
@@ -152,10 +132,6 @@ def listar_aplicacoes_por_empresa(
     id_empresa: int = Query(..., gt=0, description="ID da empresa dona das aplicações"),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    - Requer autenticação (JWT), mas **não** valida propriedade da empresa.
-    - Retorna registros da empresa OU globais (id_empresa IS NULL).
-    """
     with engine.begin() as conn:
         existe = conn.execute(
             text("SELECT 1 FROM global.empresas WHERE id = :id LIMIT 1"),
@@ -381,13 +357,11 @@ async def criar_aplicacao(
 
     # Disparar deploy/delete
     try:
-        # Deleta eventual versão anterior (usa slug "clássico")
         if removidos_ids:
             old_path_remove = _deploy_slug(slug, estado)
             if old_path_remove is not None:
                 GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=old_path_remove or "")
 
-        # Deploy atual (slug clássico + empresa enviada separadamente)
         estado_efetivo = estado or "producao"
         slug_deploy = _deploy_slug(slug, estado_efetivo)
         if slug_deploy is not None:
@@ -395,10 +369,10 @@ async def criar_aplicacao(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_url=zip_url,
-                empresa=empresa_seg,      # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO A EMPRESA
+                empresa=empresa_seg,
                 id_empresa=id_empresa,
-                aplicacao_id=new_id,      # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO O APLICACAO_ID
-                api_base=API_BASE_FOR_ACTIONS,  # <<<<<<<<<<<<<<<<<<< ENVIANDO A BASE DA API
+                aplicacao_id=new_id,
+                api_base=API_BASE_FOR_ACTIONS,
             )
     except Exception as e:
         raise HTTPException(
@@ -471,7 +445,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     new_slug = old_slug if body.slug is None else _normalize_slug(body.slug)
     new_dominio    = old_dominio if body.dominio is None else body.dominio
     new_estado     = old_estado  if body.estado  is None else body.estado
-    new_frontback  = old_frontback  # ❗ permanece inalterado
+    new_frontback  = old_frontback
     new_id_empresa = old_id_empresa if body.id_empresa is None else body.id_empresa
     new_precisa    = old_precisa_logar if body.precisa_logar is None else body.precisa_logar
 
@@ -484,7 +458,6 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
         empresa_seg = _empresa_segment(conn, new_id_empresa)
         nova_url = _canonical_url(new_dominio, new_estado, new_slug, empresa_seg)
 
-        # Desativar conflitos
         if new_path_active:
             res = conn.execute(
                 text("""
@@ -526,7 +499,6 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
 
     try:
         if new_path_active:
-            # Se mudou o caminho clássico, removemos o antigo
             old_slug_for_deploy = _deploy_slug(old_slug, old_estado)
             new_slug_for_deploy = _deploy_slug(new_slug, new_estado)
 
@@ -550,10 +522,11 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
                 domain=new_dominio,
                 slug=new_slug_for_deploy or "",
                 zip_url=zip_url,
-                empresa=empresa_seg,          # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO A EMPRESA
+                empresa=_empresa_segment  # só para indicar visualmente no diff; valor já usado acima
+                    (None, new_id_empresa),
                 id_empresa=new_id_empresa,
-                aplicacao_id=body.id,         # <<<<<<<<<<<<<<<<<<<<<< ENVIANDO O APLICACAO_ID
-                api_base=API_BASE_FOR_ACTIONS,  # <<<<<<<<<<<<<<<<<<< ENVIANDO A BASE DA API
+                aplicacao_id=body.id,
+                api_base=API_BASE_FOR_ACTIONS,
             )
         elif (not new_path_active) and old_path_active and (new_estado == "desativado"):
             old_slug_for_deploy = _deploy_slug(old_slug, old_estado)
@@ -614,7 +587,7 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
     slug = row["slug"]
     estado = row["estado"]
 
-    slug_for_delete = _deploy_slug(slug, estado)  # formato aceito pelo workflow
+    slug_for_delete = _deploy_slug(slug, estado)
 
     try:
         if slug_for_delete is not None:
@@ -644,40 +617,44 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
 
 
 # ========================================================================
-#                🔵 NOVO 1) POST /aplicacoes/registrar
+#        🔵 NOVO 1) POST /aplicacoes/registrar — SALVA O ZIP NO BANCO
 # ========================================================================
-class RegistrarAplicacaoBody(BaseModel):
-    dominio: str
-    slug: Optional[str] = None
-    front_ou_back: Optional[str] = None
-    estado: Optional[str] = None
-    id_empresa: Optional[int] = None
-    anotacoes: Optional[str] = None
-
-
 @router.post(
     "/registrar",
     status_code=status.HTTP_201_CREATED,
-    summary="Registrar aplicação SEM deploy (cria status 'preparando')",
+    summary="Registrar aplicação SEM deploy (salva ZIP no bytea e cria status 'preparando')",
 )
-def registrar_aplicacao(body: RegistrarAplicacaoBody, current_user: User = Depends(get_current_user)):
-    slug = _normalize_slug(body.slug)
-    front_ou_back = _normalize_slug(body.front_ou_back)
-    estado = _normalize_slug(body.estado)
-    _validate_inputs(body.dominio, slug, front_ou_back, estado)
+async def registrar_aplicacao(
+    dominio: str = Form(...),
+    arquivo_zip: UploadFile = File(...),
+    slug: Optional[str] = Form(None),
+    front_ou_back: Optional[str] = Form(None),
+    estado: Optional[str] = Form(None),
+    id_empresa: Optional[int] = Form(None),
+    anotacoes: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
+):
+    slug = _normalize_slug(slug)
+    front_ou_back = _normalize_slug(front_ou_back)
+    estado = _normalize_slug(estado)
+    _validate_inputs(dominio, slug, front_ou_back, estado)
+
+    data = await arquivo_zip.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="arquivo_zip vazio.")
 
     with engine.begin() as conn:
-        empresa_seg = _empresa_segment(conn, body.id_empresa)
-        url_full = _canonical_url(body.dominio, estado, slug, empresa_seg)
+        empresa_seg = _empresa_segment(conn, id_empresa)
+        url_full = _canonical_url(dominio, estado, slug, empresa_seg)
 
-        row = conn.execute(
+        new_id = conn.execute(
             text("""
                 INSERT INTO global.aplicacoes
                     (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado, id_empresa, anotacoes)
                 VALUES
                     (CAST(:dominio AS global.dominio_enum),
                      :slug,
-                     NULL,                                -- sem ZIP aqui
+                     :arquivo_zip,                -- << salva o ZIP no bytea
                      :url_completa,
                      CAST(NULLIF(:front_ou_back, '') AS gestor_capitais.frontbackenum),
                      CAST(NULLIF(:estado, '')        AS global.estado_enum),
@@ -686,13 +663,14 @@ def registrar_aplicacao(body: RegistrarAplicacaoBody, current_user: User = Depen
                 RETURNING id
             """),
             {
-                "dominio": body.dominio,
+                "dominio": dominio,
                 "slug": slug,
+                "arquivo_zip": data,
                 "url_completa": url_full,
                 "front_ou_back": front_ou_back or "",
                 "estado": estado or "",
-                "id_empresa": body.id_empresa,
-                "anotacoes": body.anotacoes,
+                "id_empresa": id_empresa,
+                "anotacoes": anotacoes,
             },
         ).scalar_one()
 
@@ -705,49 +683,38 @@ def registrar_aplicacao(body: RegistrarAplicacaoBody, current_user: User = Depen
                   SET status = 'preparando',
                       resumo_do_erro = NULL
             """),
-            {"id": row},
+            {"id": new_id},
         )
 
     return {
         "ok": True,
-        "id": int(row),
-        "dominio": body.dominio,
+        "id": int(new_id),
+        "dominio": dominio,
         "slug": slug,
         "estado": estado,
-        "id_empresa": body.id_empresa,
+        "id_empresa": id_empresa,
         "status_inicial": "preparando",
         "url": url_full,
         "front_ou_back": front_ou_back,
-        "anotacoes": body.anotacoes,
+        "anotacoes": anotacoes,
     }
 
 
 # ========================================================================
-#                🔵 NOVO 2) POST /aplicacoes/{id}/deploy
+#      🔵 NOVO 2) POST /aplicacoes/{id}/deploy — USA O ZIP DO BANCO
 # ========================================================================
 @router.post(
     "/{id}/deploy",
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Faz o deploy de uma aplicação existente (salva ZIP e muda status para 'em andamento')",
+    summary="Faz o deploy de uma aplicação existente usando o ZIP já salvo no banco (muda status para 'em andamento')",
 )
-async def deploy_aplicacao_existente(
+def deploy_aplicacao_existente(
     id: int,
-    arquivo_zip: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    - Confere se a aplicação existe
-    - Salva o ZIP em disco (para gerar zip_url) e também em global.aplicacoes.arquivo_zip (bytea)
-    - Atualiza/insere status = 'em andamento'
-    - Dispara o deploy via GitHubPagesDeployer (mesma assinatura do endpoint /criar)
-    """
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
-
-    data = await arquivo_zip.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="arquivo_zip vazio.")
 
     with engine.begin() as conn:
         app_row = conn.execute(
@@ -756,7 +723,8 @@ async def deploy_aplicacao_existente(
                        dominio::text AS dominio,
                        slug,
                        estado::text AS estado,
-                       id_empresa
+                       id_empresa,
+                       arquivo_zip
                   FROM global.aplicacoes
                  WHERE id = :id
                  LIMIT 1
@@ -767,24 +735,22 @@ async def deploy_aplicacao_existente(
         if not app_row:
             raise HTTPException(status_code=404, detail="Aplicação não encontrada.")
 
+        data: bytes = app_row["arquivo_zip"]
+        if not data:
+            raise HTTPException(status_code=400, detail="Aplicação não possui arquivo_zip salvo.")
+
         dominio = app_row["dominio"]
         slug = app_row["slug"]
         estado = app_row["estado"]
         id_empresa = app_row["id_empresa"]
 
-        # salva ZIP em disco para gerar zip_url público
+        # escreve um ZIP temporário em disco apenas para gerar o zip_url público
         ts = int(time.time())
         fname = f"{(slug or 'root')}-{id}-{ts}.zip"
         fpath = os.path.join(BASE_UPLOADS_DIR, fname)
         with open(fpath, "wb") as f:
             f.write(data)
         zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
-
-        # salva ZIP no bytea
-        conn.execute(
-            text("UPDATE global.aplicacoes SET arquivo_zip = :blob WHERE id = :id"),
-            {"blob": data, "id": id},
-        )
 
         # garante status 'em andamento'
         conn.execute(
@@ -798,10 +764,8 @@ async def deploy_aplicacao_existente(
             {"id": id},
         )
 
-        # precisamos da empresa_slug para mandar ao workflow
         empresa_seg = _empresa_segment(conn, id_empresa)
 
-    # calcula o caminho esperado pelo workflow
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)
 
@@ -817,10 +781,9 @@ async def deploy_aplicacao_existente(
                 api_base=API_BASE_FOR_ACTIONS,
             )
     except Exception as e:
-        # Mantemos a aplicação salva e status 'em andamento'; quem consulta status vê a falha pelo workflow/action
         raise HTTPException(
             status_code=502,
-            detail=f"ZIP salvo e status atualizado para 'em andamento', mas o deploy falhou: {e}",
+            detail=f"ZIP lido do banco e status 'em andamento' setado, mas o deploy falhou: {e}",
         )
 
     return {
@@ -831,5 +794,5 @@ async def deploy_aplicacao_existente(
         "slug": slug,
         "estado": estado,
         "zip_url": zip_url,
-        "mensagem": "Deploy disparado",
+        "mensagem": "Deploy disparado a partir do arquivo salvo no banco",
     }
