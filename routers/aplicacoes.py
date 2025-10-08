@@ -641,3 +641,195 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
         "github_action": {"workflow": "delete-landing", "slug_removed": slug_for_delete},
         "apagado_no_banco": apagado_no_banco,
     }
+
+
+# ========================================================================
+#                🔵 NOVO 1) POST /aplicacoes/registrar
+# ========================================================================
+class RegistrarAplicacaoBody(BaseModel):
+    dominio: str
+    slug: Optional[str] = None
+    front_ou_back: Optional[str] = None
+    estado: Optional[str] = None
+    id_empresa: Optional[int] = None
+    anotacoes: Optional[str] = None
+
+
+@router.post(
+    "/registrar",
+    status_code=status.HTTP_201_CREATED,
+    summary="Registrar aplicação SEM deploy (cria status 'preparando')",
+)
+def registrar_aplicacao(body: RegistrarAplicacaoBody, current_user: User = Depends(get_current_user)):
+    slug = _normalize_slug(body.slug)
+    front_ou_back = _normalize_slug(body.front_ou_back)
+    estado = _normalize_slug(body.estado)
+    _validate_inputs(body.dominio, slug, front_ou_back, estado)
+
+    with engine.begin() as conn:
+        empresa_seg = _empresa_segment(conn, body.id_empresa)
+        url_full = _canonical_url(body.dominio, estado, slug, empresa_seg)
+
+        row = conn.execute(
+            text("""
+                INSERT INTO global.aplicacoes
+                    (dominio, slug, arquivo_zip, url_completa, front_ou_back, estado, id_empresa, anotacoes)
+                VALUES
+                    (CAST(:dominio AS global.dominio_enum),
+                     :slug,
+                     NULL,                                -- sem ZIP aqui
+                     :url_completa,
+                     CAST(NULLIF(:front_ou_back, '') AS gestor_capitais.frontbackenum),
+                     CAST(NULLIF(:estado, '')        AS global.estado_enum),
+                     :id_empresa,
+                     :anotacoes)
+                RETURNING id
+            """),
+            {
+                "dominio": body.dominio,
+                "slug": slug,
+                "url_completa": url_full,
+                "front_ou_back": front_ou_back or "",
+                "estado": estado or "",
+                "id_empresa": body.id_empresa,
+                "anotacoes": body.anotacoes,
+            },
+        ).scalar_one()
+
+        # status = "preparando"
+        conn.execute(
+            text("""
+                INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
+                VALUES (:id, 'preparando', NULL)
+                ON CONFLICT (aplicacao_id) DO UPDATE
+                  SET status = 'preparando',
+                      resumo_do_erro = NULL
+            """),
+            {"id": row},
+        )
+
+    return {
+        "ok": True,
+        "id": int(row),
+        "dominio": body.dominio,
+        "slug": slug,
+        "estado": estado,
+        "id_empresa": body.id_empresa,
+        "status_inicial": "preparando",
+        "url": url_full,
+        "front_ou_back": front_ou_back,
+        "anotacoes": body.anotacoes,
+    }
+
+
+# ========================================================================
+#                🔵 NOVO 2) POST /aplicacoes/{id}/deploy
+# ========================================================================
+@router.post(
+    "/{id}/deploy",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Faz o deploy de uma aplicação existente (salva ZIP e muda status para 'em andamento')",
+)
+async def deploy_aplicacao_existente(
+    id: int,
+    arquivo_zip: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    - Confere se a aplicação existe
+    - Salva o ZIP em disco (para gerar zip_url) e também em global.aplicacoes.arquivo_zip (bytea)
+    - Atualiza/insere status = 'em andamento'
+    - Dispara o deploy via GitHubPagesDeployer (mesma assinatura do endpoint /criar)
+    """
+    if not BASE_UPLOADS_URL:
+        raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
+    os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
+
+    data = await arquivo_zip.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="arquivo_zip vazio.")
+
+    with engine.begin() as conn:
+        app_row = conn.execute(
+            text("""
+                SELECT id,
+                       dominio::text AS dominio,
+                       slug,
+                       estado::text AS estado,
+                       id_empresa
+                  FROM global.aplicacoes
+                 WHERE id = :id
+                 LIMIT 1
+            """),
+            {"id": id},
+        ).mappings().first()
+
+        if not app_row:
+            raise HTTPException(status_code=404, detail="Aplicação não encontrada.")
+
+        dominio = app_row["dominio"]
+        slug = app_row["slug"]
+        estado = app_row["estado"]
+        id_empresa = app_row["id_empresa"]
+
+        # salva ZIP em disco para gerar zip_url público
+        ts = int(time.time())
+        fname = f"{(slug or 'root')}-{id}-{ts}.zip"
+        fpath = os.path.join(BASE_UPLOADS_DIR, fname)
+        with open(fpath, "wb") as f:
+            f.write(data)
+        zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
+
+        # salva ZIP no bytea
+        conn.execute(
+            text("UPDATE global.aplicacoes SET arquivo_zip = :blob WHERE id = :id"),
+            {"blob": data, "id": id},
+        )
+
+        # garante status 'em andamento'
+        conn.execute(
+            text("""
+                INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
+                VALUES (:id, 'em andamento', NULL)
+                ON CONFLICT (aplicacao_id) DO UPDATE
+                  SET status = 'em andamento',
+                      resumo_do_erro = NULL
+            """),
+            {"id": id},
+        )
+
+        # precisamos da empresa_slug para mandar ao workflow
+        empresa_seg = _empresa_segment(conn, id_empresa)
+
+    # calcula o caminho esperado pelo workflow
+    estado_efetivo = estado or "producao"
+    slug_deploy = _deploy_slug(slug, estado_efetivo)
+
+    try:
+        if slug_deploy is not None:
+            GitHubPagesDeployer().dispatch(
+                domain=dominio,
+                slug=slug_deploy or "",
+                zip_url=zip_url,
+                empresa=empresa_seg,
+                id_empresa=id_empresa,
+                aplicacao_id=id,
+                api_base=API_BASE_FOR_ACTIONS,
+            )
+    except Exception as e:
+        # Mantemos a aplicação salva e status 'em andamento'; quem consulta status vê a falha pelo workflow/action
+        raise HTTPException(
+            status_code=502,
+            detail=f"ZIP salvo e status atualizado para 'em andamento', mas o deploy falhou: {e}",
+        )
+
+    return {
+        "ok": True,
+        "aplicacao_id": id,
+        "status_atual": "em andamento",
+        "dominio": dominio,
+        "slug": slug,
+        "estado": estado,
+        "zip_url": zip_url,
+        "mensagem": "Deploy disparado",
+    }
