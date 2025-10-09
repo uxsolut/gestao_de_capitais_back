@@ -542,7 +542,7 @@ def update_page_meta_and_deploy(
 @router.get(
     "/",
     response_model=List[PageMetaOut],
-    summary="(PÚBLICO) Lista Page Meta filtrando por aplicação/rota/lang (com filhos)"
+    summary="(PÚBLICO) Lista Page Meta filtrando por aplicação/rota/lang"
 )
 def list_page_meta(
     aplicacao_id: Optional[int] = Query(default=None),
@@ -550,10 +550,7 @@ def list_page_meta(
     lang_tag: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    """
-    Endpoint público para o pipeline de deploy ler os metadados.
-    Retorna também os blocos opcionais: article, product, localbusiness.
-    """
+    # 1) base
     stmt = select(PageMeta)
     if aplicacao_id is not None:
         stmt = stmt.where(PageMeta.aplicacao_id == aplicacao_id)
@@ -563,13 +560,107 @@ def list_page_meta(
         stmt = stmt.where(PageMeta.lang_tag == lang_tag)
     stmt = stmt.order_by(PageMeta.id.desc())
 
-    items = db.execute(stmt).scalars().all()
-    ids = [it.id for it in items]
-    children = _fetch_children(db, ids)
+    bases = db.execute(stmt).scalars().all()
+    if not bases:
+        return []
 
-    out_list = [PageMetaOut(**_to_out_dict(it, children[it.id])) for it in items]
-    return out_list
+    ids = [b.id for b in bases]
 
+    # 2) filhos em lote
+    art_rows = db.execute(text("""
+        SELECT page_meta_id, type, headline, description, author_name,
+               date_published, date_modified, cover_image_url
+          FROM metadados.page_meta_article
+         WHERE page_meta_id = ANY(:ids)
+    """), {"ids": ids}).mappings().all()
+
+    prod_rows = db.execute(text("""
+        SELECT page_meta_id, name, description, sku, brand, price_currency, price,
+               availability, item_condition, price_valid_until, image_urls
+          FROM metadados.page_meta_product
+         WHERE page_meta_id = ANY(:ids)
+    """), {"ids": ids}).mappings().all()
+
+    biz_rows = db.execute(text("""
+        SELECT page_meta_id, business_name, phone, price_range, street, city, region, zip,
+               latitude, longitude, opening_hours, image_urls
+          FROM metadados.page_meta_localbusiness
+         WHERE page_meta_id = ANY(:ids)
+    """), {"ids": ids}).mappings().all()
+
+    by_art  = {r["page_meta_id"]: r for r in art_rows}
+    by_prod = {r["page_meta_id"]: r for r in prod_rows}
+    by_biz  = {r["page_meta_id"]: r for r in biz_rows}
+
+    # 3) monta saída
+    out = []
+    for b in bases:
+        item = {
+            "id": b.id,
+            "aplicacao_id": b.aplicacao_id,
+            "rota": b.rota,
+            "lang_tag": b.lang_tag,
+            "seo_title": b.seo_title,
+            "seo_description": b.seo_description,
+            "canonical_url": b.canonical_url,
+            "og_title": b.og_title,
+            "og_description": b.og_description,
+            "og_image_url": b.og_image_url,
+            "og_type": b.og_type,
+            "site_name": b.site_name,
+            "article": None,
+            "product": None,
+            "localbusiness": None,
+        }
+
+        ar = by_art.get(b.id)
+        if ar:
+            item["article"] = {
+                "type": ar["type"],
+                "headline": ar["headline"],
+                "description": ar["description"],
+                "author_name": ar["author_name"],
+                "date_published": ar["date_published"],
+                "date_modified": ar["date_modified"],
+                "cover_image_url": ar["cover_image_url"],
+            }
+
+        pr = by_prod.get(b.id)
+        if pr:
+            imgs = pr["image_urls"] if isinstance(pr["image_urls"], list) else None
+            item["product"] = {
+                "name": pr["name"],
+                "description": pr["description"],
+                "sku": pr["sku"],
+                "brand": pr["brand"],
+                "price_currency": pr["price_currency"],
+                "price": pr["price"],
+                "availability": pr["availability"],
+                "item_condition": pr["item_condition"],
+                "price_valid_until": pr["price_valid_until"],
+                "image_urls": imgs,
+            }
+
+        bz = by_biz.get(b.id)
+        if bz:
+            imgs = bz["image_urls"] if isinstance(bz["image_urls"], list) else None
+            item["localbusiness"] = {
+                "business_name": bz["business_name"],
+                "phone": bz["phone"],
+                "price_range": bz["price_range"],
+                "street": bz["street"],
+                "city": bz["city"],
+                "region": bz["region"],
+                "zip": bz["zip"],
+                "latitude": bz["latitude"],
+                "longitude": bz["longitude"],
+                "opening_hours": bz["opening_hours"],
+                "image_urls": imgs,
+            }
+
+        out.append(item)
+
+    return out
 
 @router.get("/{page_meta_id}", response_model=PageMetaOut)
 def get_page_meta(

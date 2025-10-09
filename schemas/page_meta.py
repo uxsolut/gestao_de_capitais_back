@@ -27,7 +27,7 @@ class PageMetaBase(BaseModel):
 
 # --------------- Blocos opcionais ---------------
 class ArticleMeta(BaseModel):
-    type: Optional[str] = None          # ex.: Article/NewsArticle/BlogPosting
+    type: Optional[str] = None          # Article / NewsArticle / BlogPosting
     headline: Optional[str] = None
     description: Optional[str] = None
     author_name: Optional[str] = None
@@ -43,8 +43,8 @@ class ProductMeta(BaseModel):
     brand: Optional[str] = None
     price_currency: Optional[str] = None  # ISO 4217
     price: Optional[Decimal] = None
-    availability: Optional[str] = None    # ex.: InStock
-    item_condition: Optional[str] = None  # ex.: NewCondition
+    availability: Optional[str] = None    # InStock
+    item_condition: Optional[str] = None  # NewCondition
     price_valid_until: Optional[date] = None
     image_urls: Optional[List[HttpUrl]] = None
 
@@ -52,14 +52,14 @@ class ProductMeta(BaseModel):
 class LocalBusinessMeta(BaseModel):
     business_name: Optional[str] = None
     phone: Optional[str] = None
-    price_range: Optional[str] = None     # ex.: "$$"
+    price_range: Optional[str] = None     # "$$", "$$$"
     street: Optional[str] = None
     city: Optional[str] = None
     region: Optional[str] = None
     zip: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    opening_hours: Optional[List[str]] = None  # guardado como jsonb
+    opening_hours: Optional[List[str]] = None  # jsonb
     image_urls: Optional[List[HttpUrl]] = None
 
 
@@ -76,7 +76,7 @@ class PageMetaUpdate(BaseModel):
     rota: Optional[str] = None
     lang_tag: Optional[str] = None
 
-    # core (todos opcionais no update)
+    # core (opcionais)
     seo_title: Optional[str] = None
     seo_description: Optional[str] = None
     canonical_url: Optional[HttpUrl] = None
@@ -95,6 +95,10 @@ class PageMetaUpdate(BaseModel):
 
 class PageMetaOut(PageMetaBase):
     id: int
+    # 🔹 expostos no output
+    article: Optional[ArticleMeta] = None
+    product: Optional[ProductMeta] = None
+    localbusiness: Optional[LocalBusinessMeta] = None
 
     class Config:
         from_attributes = True
