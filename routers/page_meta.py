@@ -56,6 +56,20 @@ def _ensure_leading_slash(path: str) -> str:
     return path if path.startswith("/") else f"/{path}"
 
 
+def _pg_text_array(values: Optional[List[str]]) -> Optional[str]:
+    """
+    Converte lista Python -> literal Postgres text[]: {"a","b"}
+    (escapa aspas e barras).
+    Retorna None se lista vazia/None.
+    """
+    if not values:
+        return None
+    def esc(s: str) -> str:
+        s = s.replace("\\", "\\\\").replace('"', '\\"')
+        return s
+    return "{" + ",".join(f'"{esc(str(v))}"' for v in values) + "}"
+
+
 def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta]):
     if data is None:
         return
@@ -108,7 +122,7 @@ def _upsert_product(db: Session, page_meta_id: int, data: Optional[ProductMeta])
              availability, item_condition, price_valid_until, image_urls)
         VALUES
             (:id, :name, :description, :sku, :brand, :price_currency, :price,
-             :availability, :item_condition, CAST(:price_valid_until AS date), CAST(:image_urls AS jsonb))
+             :availability, :item_condition, :price_valid_until, :image_urls::text[])
         ON CONFLICT (page_meta_id) DO UPDATE SET
             name = EXCLUDED.name,
             description = EXCLUDED.description,
@@ -132,7 +146,7 @@ def _upsert_product(db: Session, page_meta_id: int, data: Optional[ProductMeta])
         "availability": data.availability,
         "item_condition": data.item_condition,
         "price_valid_until": data.price_valid_until,
-        "image_urls": json.dumps([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
+        "image_urls": _pg_text_array([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
     })
 
 
@@ -151,7 +165,7 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
              latitude, longitude, opening_hours, image_urls)
         VALUES
             (:id, :business_name, :phone, :price_range, :street, :city, :region, :zip,
-             :latitude, :longitude, CAST(:opening_hours AS jsonb), CAST(:image_urls AS jsonb))
+             :latitude, :longitude, :opening_hours::text[], :image_urls::text[])
         ON CONFLICT (page_meta_id) DO UPDATE SET
             business_name = EXCLUDED.business_name,
             phone = EXCLUDED.phone,
@@ -176,8 +190,8 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
         "zip": data.zip,
         "latitude": data.latitude,
         "longitude": data.longitude,
-        "opening_hours": json.dumps(list(data.opening_hours)) if data.opening_hours else None,
-        "image_urls": json.dumps([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
+        "opening_hours": _pg_text_array(list(data.opening_hours)) if data.opening_hours else None,
+        "image_urls": _pg_text_array([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
     })
 
 
@@ -287,12 +301,8 @@ def create_or_update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
-            # apaga o destino correspondente antes do deploy (idempotente)
-            GitHubPagesDeployer().dispatch_delete(
-                domain=dominio,
-                slug=slug_deploy or ""
-            )
-            # deploy em seguida
+            # apaga destino (idempotente) e faz deploy
+            GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
@@ -403,12 +413,7 @@ def update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
-            # apaga o destino correspondente antes do deploy
-            GitHubPagesDeployer().dispatch_delete(
-                domain=dominio,
-                slug=slug_deploy or ""
-            )
-            # deploy em seguida
+            GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
