@@ -3,6 +3,7 @@
 from typing import List, Optional
 import os
 import time
+import json
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Body
@@ -24,6 +25,7 @@ from routers.aplicacoes import (
 from services.deploy_pages_service import GitHubPagesDeployer
 
 router = APIRouter(prefix="/page-meta", tags=["Page Meta"])
+
 
 # ----------------------------- helpers -----------------------------
 def _is_empty_model(data) -> bool:
@@ -159,7 +161,7 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
              latitude, longitude, opening_hours, image_urls)
         VALUES
             (:id, :business_name, :phone, :price_range, :street, :city, :region, :zip,
-             :latitude, :longitude, CAST(:opening_hours AS text[]), CAST(:image_urls AS text[]))
+             :latitude, :longitude, :opening_hours::jsonb, CAST(:image_urls AS text[]))
         ON CONFLICT (page_meta_id) DO UPDATE SET
             business_name = EXCLUDED.business_name,
             phone = EXCLUDED.phone,
@@ -184,7 +186,7 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
         "zip": data.zip,
         "latitude": data.latitude,
         "longitude": data.longitude,
-        "opening_hours": _pg_text_array(list(data.opening_hours)) if data.opening_hours else None,
+        "opening_hours": json.dumps(list(data.opening_hours)) if data.opening_hours else json.dumps([]),
         "image_urls": _pg_text_array([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
     })
 
@@ -199,6 +201,7 @@ def create_or_update_page_meta_and_deploy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # 1) UPSERT page_meta pela chave composta
     row = db.execute(text("""
         SELECT id FROM metadados.page_meta
          WHERE aplicacao_id = :ap
@@ -242,12 +245,14 @@ def create_or_update_page_meta_and_deploy(
         db.commit()
         db.refresh(item)
 
+    # 2) Filhos opcionais
     _upsert_article(db, item.id, body.article)
     _upsert_product(db, item.id, body.product)
     _upsert_localbiz(db, item.id, body.localbusiness)
     db.commit()
     db.refresh(item)
 
+    # 3) Preparação do ZIP + status
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
@@ -292,7 +297,9 @@ def create_or_update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
+            # apaga antes de publicar (idempotente)
             GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
+            # publica
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
@@ -325,6 +332,7 @@ def update_page_meta_and_deploy(
         new_ro = _ensure_leading_slash(body.rota) if body.rota is not None else item.rota
         new_la = body.lang_tag or item.lang_tag
 
+        # checa conflito
         row = db.execute(text("""
             SELECT id FROM metadados.page_meta
              WHERE id <> :cur
