@@ -161,7 +161,7 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
              latitude, longitude, opening_hours, image_urls)
         VALUES
             (:id, :business_name, :phone, :price_range, :street, :city, :region, :zip,
-             :latitude, :longitude, :opening_hours::jsonb, CAST(:image_urls AS text[]))
+             :latitude, :longitude, CAST(:opening_hours AS jsonb), CAST(:image_urls AS text[]))
         ON CONFLICT (page_meta_id) DO UPDATE SET
             business_name = EXCLUDED.business_name,
             phone = EXCLUDED.phone,
@@ -186,9 +186,12 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
         "zip": data.zip,
         "latitude": data.latitude,
         "longitude": data.longitude,
+        # aqui vai um JSON string (ex.: '["Mo-Fr 09:00-18:00","Sa 09:00-13:00"]')
         "opening_hours": json.dumps(list(data.opening_hours)) if data.opening_hours else json.dumps([]),
+        # text[] como {"a","b"}
         "image_urls": _pg_text_array([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
     })
+
 
 
 # --------------------------- POST (UPSERT + deploy) ---------------------------
