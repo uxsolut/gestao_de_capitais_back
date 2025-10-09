@@ -291,13 +291,11 @@ def create_or_update_page_meta_and_deploy(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_url=zip_url,
-                empresa=empresa_seg,
+                empresa=empresa_seg or "",
                 id_empresa=id_empresa,
-                aplicacao_id=body.aplicacao_id,
+                aplicacao_id=str(body.aplicacao_id),
                 api_base=API_BASE_FOR_ACTIONS,
-                meta_rota=item.rota,
-                meta_lang=item.lang_tag,
-                page_meta_id=str(item.id),
+                # ⬇️ Removidos: meta_rota / meta_lang / page_meta_id
             )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Metadados salvos, status atualizado, mas falhou o deploy: {e}")
@@ -404,13 +402,11 @@ def update_page_meta_and_deploy(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_url=zip_url,
-                empresa=empresa_seg,
+                empresa=empresa_seg or "",
                 id_empresa=id_empresa,
-                aplicacao_id=item.aplicacao_id,
+                aplicacao_id=str(item.aplicacao_id),
                 api_base=API_BASE_FOR_ACTIONS,
-                meta_rota=item.rota,
-                meta_lang=item.lang_tag,
-                page_meta_id=str(item.id),
+                # ⬇️ Removidos: meta_rota / meta_lang / page_meta_id
             )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Metadados atualizados, mas falhou o deploy: {e}")
