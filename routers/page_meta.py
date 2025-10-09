@@ -287,6 +287,12 @@ def create_or_update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
+            # 🔸 apaga o destino correspondente antes do deploy (idempotente)
+            GitHubPagesDeployer().dispatch_delete(
+                domain=dominio,
+                slug=slug_deploy or ""
+            )
+            # 🔹 deploy logo em seguida
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
@@ -397,6 +403,12 @@ def update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
+            # 🔸 apaga o destino correspondente antes do deploy
+            GitHubPagesDeployer().dispatch_delete(
+                domain=dominio,
+                slug=slug_deploy or ""
+            )
+            # 🔹 deploy em seguida
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
@@ -414,8 +426,8 @@ def update_page_meta_and_deploy(
 
 # --------------------------- GETs ---------------------------
 @router.get(
-    "/", 
-    response_model=List[PageMetaOut], 
+    "/",
+    response_model=List[PageMetaOut],
     summary="(PÚBLICO) Lista Page Meta filtrando por aplicação/rota/lang"
 )
 def list_page_meta(
