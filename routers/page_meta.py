@@ -108,7 +108,7 @@ def _upsert_product(db: Session, page_meta_id: int, data: Optional[ProductMeta])
              availability, item_condition, price_valid_until, image_urls)
         VALUES
             (:id, :name, :description, :sku, :brand, :price_currency, :price,
-             :availability, :item_condition, :price_valid_until, :image_urls::jsonb)
+             :availability, :item_condition, CAST(:price_valid_until AS date), CAST(:image_urls AS jsonb))
         ON CONFLICT (page_meta_id) DO UPDATE SET
             name = EXCLUDED.name,
             description = EXCLUDED.description,
@@ -151,7 +151,7 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
              latitude, longitude, opening_hours, image_urls)
         VALUES
             (:id, :business_name, :phone, :price_range, :street, :city, :region, :zip,
-             :latitude, :longitude, :opening_hours::jsonb, :image_urls::jsonb)
+             :latitude, :longitude, CAST(:opening_hours AS jsonb), CAST(:image_urls AS jsonb))
         ON CONFLICT (page_meta_id) DO UPDATE SET
             business_name = EXCLUDED.business_name,
             phone = EXCLUDED.phone,
@@ -287,12 +287,12 @@ def create_or_update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
-            # 🔸 apaga o destino correspondente antes do deploy (idempotente)
+            # apaga o destino correspondente antes do deploy (idempotente)
             GitHubPagesDeployer().dispatch_delete(
                 domain=dominio,
                 slug=slug_deploy or ""
             )
-            # 🔹 deploy logo em seguida
+            # deploy em seguida
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
@@ -403,12 +403,12 @@ def update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
-            # 🔸 apaga o destino correspondente antes do deploy
+            # apaga o destino correspondente antes do deploy
             GitHubPagesDeployer().dispatch_delete(
                 domain=dominio,
                 slug=slug_deploy or ""
             )
-            # 🔹 deploy em seguida
+            # deploy em seguida
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
