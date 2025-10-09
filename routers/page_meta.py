@@ -2,54 +2,39 @@
 # -*- coding: utf-8 -*-
 from typing import List, Optional
 import os
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, status
+import time
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, status, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import select, text
-from pydantic import BaseModel
-from database import get_db
+from database import get_db, engine
+
+from auth.dependencies import get_current_user
+from models.users import User
 from models.page_meta import PageMeta
 from schemas.page_meta import (
     PageMetaCreate, PageMetaUpdate, PageMetaOut,
     ArticleMeta, ProductMeta, LocalBusinessMeta
 )
 
+# Reuso do que já existe no router de aplicações (mesma lógica do seu deploy)
+from routers.aplicacoes import (
+    _empresa_segment, _deploy_slug,
+    BASE_UPLOADS_DIR, BASE_UPLOADS_URL, API_BASE_FOR_ACTIONS
+)
+from services.deploy_pages_service import GitHubPagesDeployer
+
 router = APIRouter(prefix="/page-meta", tags=["Page Meta"])
 
-# ---------- GitHub Actions: workflow_dispatch ----------
-async def _trigger_github_deploy(aplicacao_id: int, rota: str, lang_tag: str, page_meta_id: int):
-    gh_token = os.getenv("GH_TOKEN")
-    gh_owner = os.getenv("GH_OWNER")
-    gh_repo = os.getenv("GH_REPO")
-    gh_workflow = os.getenv("GH_WORKFLOW", "deploy.yml")
-    gh_ref = os.getenv("GH_REF", "backup-state")
+# --------------------------------- helpers filhos ---------------------------------
+def _is_empty_model(data) -> bool:
+    # Considera "vazio" quando todos os campos são None
+    return data is not None and all(getattr(data, f) is None for f in data.__fields__)
 
-    if not all([gh_token, gh_owner, gh_repo, gh_workflow, gh_ref]):
-        return
-
-    url = f"https://api.github.com/repos/{gh_owner}/{gh_repo}/actions/workflows/{gh_workflow}/dispatches"
-    headers = {"Authorization": f"Bearer {gh_token}", "Accept": "application/vnd.github+json"}
-    payload = {
-        "ref": gh_ref,
-        "inputs": {
-            "acao": "page_meta",
-            "aplicacao_id": str(aplicacao_id),
-            "rota": rota,
-            "lang_tag": lang_tag,
-            "page_meta_id": str(page_meta_id),
-        },
-    }
-    timeout = httpx.Timeout(20.0, read=20.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        await client.post(url, headers=headers, json=payload)
-
-# ---------- helpers UPSERT / DELETE filhos ----------
 def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta]):
     if data is None:
         return
-    # {} => deletar
-    if all(getattr(data, f) is None for f in data.__fields__):
-        db.execute(text("DELETE FROM metadados.page_meta_article WHERE page_meta_id = :id"), {"id": page_meta_id})
+    if _is_empty_model(data):
+        db.execute(text("DELETE FROM metadodos.page_meta_article WHERE page_meta_id = :id"), {"id": page_meta_id})
         return
     db.execute(text("""
         INSERT INTO metadados.page_meta_article
@@ -79,7 +64,7 @@ def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta])
 def _upsert_product(db: Session, page_meta_id: int, data: Optional[ProductMeta]):
     if data is None:
         return
-    if all(getattr(data, f) is None for f in data.__fields__):
+    if _is_empty_model(data):
         db.execute(text("DELETE FROM metadados.page_meta_product WHERE page_meta_id = :id"), {"id": page_meta_id})
         return
     db.execute(text("""
@@ -118,7 +103,7 @@ def _upsert_product(db: Session, page_meta_id: int, data: Optional[ProductMeta])
 def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusinessMeta]):
     if data is None:
         return
-    if all(getattr(data, f) is None for f in data.__fields__):
+    if _is_empty_model(data):
         db.execute(text("DELETE FROM metadados.page_meta_localbusiness WHERE page_meta_id = :id"), {"id": page_meta_id})
         return
     db.execute(text("""
@@ -152,61 +137,147 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
         "zip": data.zip,
         "latitude": data.latitude,
         "longitude": data.longitude,
-        "opening_hours": data.opening_hours,             # lista -> jsonb
+        "opening_hours": data.opening_hours,   # list -> jsonb
         "image_urls": [str(u) for u in (data.image_urls or [])] or None,
     })
 
-# ---------- Respostas ----------
-class CreateResponse(BaseModel):
-    id: int
-    message: str = "page_meta criada; deploy disparado em background (se configurado)."
-
-# ---------- POST ----------
-@router.post("/", response_model=CreateResponse, status_code=status.HTTP_201_CREATED)
-def create_page_meta(body: PageMetaCreate, background: BackgroundTasks, db: Session = Depends(get_db)):
-    existe = db.execute(
+# --------------------------- POST (JSON) + deploy ZIP ---------------------------
+@router.post(
+    "/", response_model=PageMetaOut, status_code=status.HTTP_201_CREATED,
+    summary="Cria/atualiza Page Meta via JSON (mantém o contrato atual) e dispara deploy com ZIP salvo"
+)
+def create_or_update_page_meta_and_deploy(
+    body: PageMetaCreate = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mantém o JSON cheião do Swagger, salva tudo e dispara o deploy reaproveitando o ZIP de global.aplicacoes."""
+    # 1) UPSERT page_meta (pelo trio aplicacao_id+rota+lang_tag)
+    exists = db.execute(
         select(PageMeta).where(
             PageMeta.aplicacao_id == body.aplicacao_id,
             PageMeta.rota == body.rota,
             PageMeta.lang_tag == body.lang_tag,
         )
-    ).scalars().first()
-    if existe:
-        raise HTTPException(status_code=409, detail="Já existe page_meta para (aplicacao_id, rota, lang_tag).")
+    ).scalar_one_or_none()
 
-    item = PageMeta(
-        aplicacao_id=body.aplicacao_id,
-        rota=body.rota,
-        lang_tag=body.lang_tag,
-        seo_title=body.seo_title,
-        seo_description=body.seo_description,
-        canonical_url=str(body.canonical_url),
-        og_title=body.og_title,
-        og_description=body.og_description,
-        og_image_url=str(body.og_image_url) if body.og_image_url else None,
-        og_type=body.og_type or "website",
-        site_name=body.site_name,
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
+    if exists:
+        item = exists
+        item.seo_title       = body.seo_title
+        item.seo_description = body.seo_description
+        item.canonical_url   = str(body.canonical_url)
+        item.og_title        = body.og_title
+        item.og_description  = body.og_description
+        item.og_image_url    = str(body.og_image_url) if body.og_image_url else None
+        item.og_type         = body.og_type or "website"
+        item.site_name       = body.site_name
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+    else:
+        item = PageMeta(
+            aplicacao_id=body.aplicacao_id,
+            rota=body.rota,
+            lang_tag=body.lang_tag,
+            seo_title=body.seo_title,
+            seo_description=body.seo_description,
+            canonical_url=str(body.canonical_url),
+            og_title=body.og_title,
+            og_description=body.og_description,
+            og_image_url=str(body.og_image_url) if body.og_image_url else None,
+            og_type=body.og_type or "website",
+            site_name=body.site_name,
+        )
+        db.add(item)
+        db.commit()
+        db.refresh(item)
 
-    # upsert filhos (se vierem)
+    # 2) Filhos (opcionais)
     _upsert_article(db, item.id, body.article)
     _upsert_product(db, item.id, body.product)
     _upsert_localbiz(db, item.id, body.localbusiness)
     db.commit()
+    db.refresh(item)
 
-    background.add_task(_trigger_github_deploy, item.aplicacao_id, item.rota, item.lang_tag, item.id)
-    return CreateResponse(id=item.id)
+    # 3) Reaproveita o ZIP salvo em global.aplicacoes + status 'em andamento'
+    if not BASE_UPLOADS_URL:
+        raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
+    os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
 
-# ---------- PUT ----------
+    with engine.begin() as conn:
+        app_row = conn.execute(text("""
+            SELECT id, dominio::text AS dominio, slug, estado::text AS estado, id_empresa, arquivo_zip
+              FROM global.aplicacoes
+             WHERE id = :id
+             LIMIT 1
+        """), {"id": body.aplicacao_id}).mappings().first()
+
+        if not app_row:
+            raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
+
+        zip_bytes: bytes = app_row["arquivo_zip"]
+        if not zip_bytes:
+            raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
+
+        dominio    = app_row["dominio"]
+        slug       = app_row["slug"]
+        estado     = app_row["estado"]
+        id_empresa = app_row["id_empresa"]
+
+        ts = int(time.time())
+        fname = f"{(slug or 'root')}-{body.aplicacao_id}-{ts}.zip"
+        fpath = os.path.join(BASE_UPLOADS_DIR, fname)
+        with open(fpath, "wb") as f:
+            f.write(zip_bytes)
+        zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
+
+        # status 'em andamento'
+        conn.execute(text("""
+            INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
+            VALUES (:id, 'em andamento', NULL)
+            ON CONFLICT (aplicacao_id) DO UPDATE
+              SET status='em andamento', resumo_do_erro=NULL
+        """), {"id": body.aplicacao_id})
+
+        empresa_seg = _empresa_segment(conn, id_empresa)
+
+    estado_efetivo = estado or "producao"
+    slug_deploy = _deploy_slug(slug, estado_efetivo)
+
+    # 4) Dispara workflow de deploy (passando meta_rota/meta_lang/page_meta_id)
+    try:
+        if slug_deploy is not None:
+            GitHubPagesDeployer().dispatch(
+                domain=dominio,
+                slug=slug_deploy or "",
+                zip_url=zip_url,
+                empresa=empresa_seg,
+                id_empresa=id_empresa,
+                aplicacao_id=body.aplicacao_id,
+                api_base=API_BASE_FOR_ACTIONS,
+                meta_rota=body.rota,
+                meta_lang=body.lang_tag,
+                page_meta_id=str(item.id),
+            )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Metadados salvos, status atualizado, mas falhou o deploy: {e}")
+
+    return item
+
+
+# --------------------------- PUT (JSON) + deploy ZIP ---------------------------
 @router.put("/{page_meta_id}", response_model=PageMetaOut)
-def update_page_meta(page_meta_id: int, body: PageMetaUpdate, background: BackgroundTasks, db: Session = Depends(get_db)):
+def update_page_meta_and_deploy(
+    page_meta_id: int,
+    body: PageMetaUpdate = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     item = db.get(PageMeta, page_meta_id)
     if not item:
         raise HTTPException(status_code=404, detail="page_meta não encontrada.")
 
+    # Pode mudar a chave? então previne conflito
     if body.aplicacao_id or body.rota or body.lang_tag:
         new_ap = body.aplicacao_id or item.aplicacao_id
         new_ro = body.rota or item.rota
@@ -218,12 +289,12 @@ def update_page_meta(page_meta_id: int, body: PageMetaUpdate, background: Backgr
                 PageMeta.rota == new_ro,
                 PageMeta.lang_tag == new_la,
             )
-        ).scalars().first()
+        ).scalar_one_or_none()
         if conflict:
             raise HTTPException(status_code=409, detail="Conflito com (aplicacao_id, rota, lang_tag).")
         item.aplicacao_id, item.rota, item.lang_tag = new_ap, new_ro, new_la
 
-    for field in ["seo_title", "seo_description", "og_title", "og_description", "og_type", "site_name"]:
+    for field in ["seo_title","seo_description","og_title","og_description","og_type","site_name"]:
         val = getattr(body, field, None)
         if val is not None:
             setattr(item, field, val)
@@ -235,23 +306,83 @@ def update_page_meta(page_meta_id: int, body: PageMetaUpdate, background: Backgr
     db.add(item)
     db.commit()
 
-    # filhos (só mexe se vierem no payload)
     _upsert_article(db, item.id, body.article)
     _upsert_product(db, item.id, body.product)
     _upsert_localbiz(db, item.id, body.localbusiness)
     db.commit()
-
     db.refresh(item)
-    background.add_task(_trigger_github_deploy, item.aplicacao_id, item.rota, item.lang_tag, item.id)
+
+    # Reaproveita o mesmo fluxo de deploy (ZIP do banco + status)
+    if not BASE_UPLOADS_URL:
+        raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
+    os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
+
+    with engine.begin() as conn:
+        app_row = conn.execute(text("""
+            SELECT id, dominio::text AS dominio, slug, estado::text AS estado, id_empresa, arquivo_zip
+              FROM global.aplicacoes
+             WHERE id = :id
+             LIMIT 1
+        """), {"id": item.aplicacao_id}).mappings().first()
+
+        if not app_row:
+            raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
+        zip_bytes: bytes = app_row["arquivo_zip"]
+        if not zip_bytes:
+            raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
+
+        dominio    = app_row["dominio"]
+        slug       = app_row["slug"]
+        estado     = app_row["estado"]
+        id_empresa = app_row["id_empresa"]
+
+        ts = int(time.time())
+        fname = f"{(slug or 'root')}-{item.aplicacao_id}-{ts}.zip"
+        fpath = os.path.join(BASE_UPLOADS_DIR, fname)
+        with open(fpath, "wb") as f:
+            f.write(zip_bytes)
+        zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
+
+        conn.execute(text("""
+            INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
+            VALUES (:id, 'em andamento', NULL)
+            ON CONFLICT (aplicacao_id) DO UPDATE
+              SET status='em andamento', resumo_do_erro=NULL
+        """), {"id": item.aplicacao_id})
+
+        empresa_seg = _empresa_segment(conn, id_empresa)
+
+    estado_efetivo = estado or "producao"
+    slug_deploy = _deploy_slug(slug, estado_efetivo)
+
+    try:
+        if slug_deploy is not None:
+            GitHubPagesDeployer().dispatch(
+                domain=dominio,
+                slug=slug_deploy or "",
+                zip_url=zip_url,
+                empresa=empresa_seg,
+                id_empresa=id_empresa,
+                aplicacao_id=item.aplicacao_id,
+                api_base=API_BASE_FOR_ACTIONS,
+                meta_rota=item.rota,
+                meta_lang=item.lang_tag,
+                page_meta_id=str(item.id),
+            )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Metadados atualizados, mas falhou o deploy: {e}")
+
     return item
 
-# ---------- GET (listar) ----------
+
+# --------------------------- GETs (inalterados) ---------------------------
 @router.get("/", response_model=List[PageMetaOut])
 def list_page_meta(
     aplicacao_id: Optional[int] = Query(default=None),
     rota: Optional[str] = Query(default=None),
     lang_tag: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     stmt = select(PageMeta)
     if aplicacao_id is not None:
@@ -263,9 +394,8 @@ def list_page_meta(
     stmt = stmt.order_by(PageMeta.id.desc())
     return db.execute(stmt).scalars().all()
 
-# ---------- GET (por id) ----------
 @router.get("/{page_meta_id}", response_model=PageMetaOut)
-def get_page_meta(page_meta_id: int, db: Session = Depends(get_db)):
+def get_page_meta(page_meta_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     item = db.get(PageMeta, page_meta_id)
     if not item:
         raise HTTPException(status_code=404, detail="page_meta não encontrada.")

@@ -714,28 +714,22 @@ async def registrar_aplicacao(
 
 
 # ========================================================================
-# 🔵 POST /aplicacoes/{id}/deploy — USA O ZIP DO BANCO + METADADOS
+#      🔵 NOVO 2) POST /aplicacoes/{id}/deploy — USA O ZIP DO BANCO
 # ========================================================================
 @router.post(
     "/{id}/deploy",
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Faz o deploy de uma aplicação existente usando o ZIP já salvo no banco (muda status para 'em andamento') e envia rota/idioma de metadados",
+    summary="Faz o deploy de uma aplicação existente usando o ZIP já salvo no banco (muda status para 'em andamento')",
 )
 def deploy_aplicacao_existente(
     id: int,
-    meta_rota: str = Query("/", description="Rota dos metadados (ex.: '/', '/contato')"),
-    meta_lang: str = Query("pt-BR", description="Lang BCP47 (ex.: 'pt-BR', 'en-US')"),
     current_user: User = Depends(get_current_user),
 ):
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
 
-    meta_rota = (meta_rota or "/").strip() or "/"
-    meta_lang = (meta_lang or "pt-BR").strip() or "pt-BR"
-
     with engine.begin() as conn:
-        # ---- carrega app + ZIP do banco
         app_row = conn.execute(
             text("""
                 SELECT id,
@@ -763,7 +757,7 @@ def deploy_aplicacao_existente(
         estado = app_row["estado"]
         id_empresa = app_row["id_empresa"]
 
-        # ---- escreve ZIP temporário para ter uma URL pública
+        # escreve um ZIP temporário em disco apenas para gerar o zip_url público
         ts = int(time.time())
         fname = f"{(slug or 'root')}-{id}-{ts}.zip"
         fpath = os.path.join(BASE_UPLOADS_DIR, fname)
@@ -771,7 +765,7 @@ def deploy_aplicacao_existente(
             f.write(data)
         zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
 
-        # ---- garante status 'em andamento'
+        # garante status 'em andamento'
         conn.execute(
             text("""
                 INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
@@ -783,25 +777,11 @@ def deploy_aplicacao_existente(
             {"id": id},
         )
 
-        # ---- pega id do page_meta correspondente (se existir) para log/telemetria
-        page_meta_id = conn.execute(
-            text("""
-                SELECT id
-                  FROM metadados.page_meta
-                 WHERE aplicacao_id = :aplicacao_id
-                   AND rota = :rota
-                   AND lang_tag = :lang
-                 LIMIT 1
-            """),
-            {"aplicacao_id": id, "rota": meta_rota, "lang": meta_lang},
-        ).scalar()
-
         empresa_seg = _empresa_segment(conn, id_empresa)
 
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)
 
-    # ---- dispara o workflow do GitHub (o workflow buscará os metadados na API)
     try:
         if slug_deploy is not None:
             GitHubPagesDeployer().dispatch(
@@ -812,10 +792,6 @@ def deploy_aplicacao_existente(
                 id_empresa=id_empresa,
                 aplicacao_id=id,
                 api_base=API_BASE_FOR_ACTIONS,
-                # 🚀 NOVO: parâmetros para o workflow embutir metatags
-                meta_rota=meta_rota,
-                meta_lang=meta_lang,
-                page_meta_id=str(page_meta_id) if page_meta_id else "",
             )
     except Exception as e:
         raise HTTPException(
@@ -831,8 +807,5 @@ def deploy_aplicacao_existente(
         "slug": slug,
         "estado": estado,
         "zip_url": zip_url,
-        "meta_rota": meta_rota,
-        "meta_lang": meta_lang,
-        "page_meta_id": page_meta_id,
-        "mensagem": "Deploy disparado a partir do arquivo salvo no banco (com parâmetros de metadados).",
+        "mensagem": "Deploy disparado a partir do arquivo salvo no banco",
     }
