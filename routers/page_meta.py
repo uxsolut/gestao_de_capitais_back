@@ -7,7 +7,7 @@ import json
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Body
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, text
 from database import get_db, engine
 
@@ -60,9 +60,11 @@ def _pg_text_array(values: Optional[List[str]]) -> Optional[str]:
     """Converte lista Python -> literal Postgres text[]: {"a","b"}"""
     if not values:
         return None
+
     def esc(s: str) -> str:
         s = s.replace("\\", "\\\\").replace('"', '\\"')
         return s
+
     return "{" + ",".join(f'"{esc(str(v))}"' for v in values) + "}"
 
 
@@ -186,12 +188,9 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
         "zip": data.zip,
         "latitude": data.latitude,
         "longitude": data.longitude,
-        # aqui vai um JSON string (ex.: '["Mo-Fr 09:00-18:00","Sa 09:00-13:00"]')
         "opening_hours": json.dumps(list(data.opening_hours)) if data.opening_hours else json.dumps([]),
-        # text[] como {"a","b"}
         "image_urls": _pg_text_array([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
     })
-
 
 
 # --------------------------- POST (UPSERT + deploy) ---------------------------
@@ -444,7 +443,14 @@ def list_page_meta(
     Endpoint público para o pipeline de deploy ler os metadados.
     Filtre sempre por aplicacao_id + rota + lang_tag para resultados precisos.
     """
-    stmt = select(PageMeta)
+    stmt = (
+        select(PageMeta)
+        .options(
+            selectinload(PageMeta.article),
+            selectinload(PageMeta.product),
+            selectinload(PageMeta.localbusiness),
+        )
+    )
     if aplicacao_id is not None:
         stmt = stmt.where(PageMeta.aplicacao_id == aplicacao_id)
     if rota:
@@ -456,8 +462,22 @@ def list_page_meta(
 
 
 @router.get("/{page_meta_id}", response_model=PageMetaOut)
-def get_page_meta(page_meta_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    item = db.get(PageMeta, page_meta_id)
+def get_page_meta(
+    page_meta_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    stmt = (
+        select(PageMeta)
+        .options(
+            selectinload(PageMeta.article),
+            selectinload(PageMeta.product),
+            selectinload(PageMeta.localbusiness),
+        )
+        .where(PageMeta.id == page_meta_id)
+        .limit(1)
+    )
+    item = db.execute(stmt).scalars().first()
     if not item:
         raise HTTPException(status_code=404, detail="page_meta não encontrada.")
     return item
