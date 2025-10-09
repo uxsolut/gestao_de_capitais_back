@@ -1,13 +1,13 @@
 # routers/page_meta.py
 # -*- coding: utf-8 -*-
-from typing import List, Optional
+from typing import List, Optional, Any
 import os
 import time
 import json
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Body
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 from sqlalchemy import select, text
 from database import get_db, engine
 
@@ -68,6 +68,119 @@ def _pg_text_array(values: Optional[List[str]]) -> Optional[str]:
     return "{" + ",".join(f'"{esc(str(v))}"' for v in values) + "}"
 
 
+def _coerce_text_array(value: Any) -> Optional[List[str]]:
+    """Garante que text[] venha como List[str]."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [str(x) for x in value]
+    # Se vier como string no formato {"a","b"}
+    s = str(value).strip()
+    if s.startswith("{") and s.endswith("}"):
+        s = s[1:-1]
+        if not s:
+            return []
+        parts = []
+        cur = ""
+        in_quotes = False
+        i = 0
+        while i < len(s):
+            ch = s[i]
+            if ch == '"' and (i == 0 or s[i - 1] != "\\"):
+                in_quotes = not in_quotes
+            elif ch == "," and not in_quotes:
+                parts.append(cur)
+                cur = ""
+            else:
+                cur += ch
+            i += 1
+        parts.append(cur)
+        return [p.replace('\\"', '"').replace("\\\\", "\\").strip('"') for p in parts]
+    # fallback
+    return [str(value)]
+
+
+def _coerce_json_list(value: Any) -> Optional[List[str]]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [str(x) for x in value]
+    try:
+        return [str(x) for x in json.loads(value)]
+    except Exception:
+        return [str(value)]
+
+
+def _fetch_article(db: Session, page_meta_id: int) -> Optional[ArticleMeta]:
+    row = db.execute(text("""
+        SELECT type, headline, description, author_name,
+               date_published, date_modified, cover_image_url
+          FROM metadados.page_meta_article
+         WHERE page_meta_id = :id
+         LIMIT 1
+    """), {"id": page_meta_id}).mappings().first()
+    if not row:
+        return None
+    return ArticleMeta(
+        type=row["type"],
+        headline=row["headline"],
+        description=row["description"],
+        author_name=row["author_name"],
+        date_published=row["date_published"],
+        date_modified=row["date_modified"],
+        cover_image_url=row["cover_image_url"],
+    )
+
+
+def _fetch_product(db: Session, page_meta_id: int) -> Optional[ProductMeta]:
+    row = db.execute(text("""
+        SELECT name, description, sku, brand, price_currency, price,
+               availability, item_condition, price_valid_until, image_urls
+          FROM metadados.page_meta_product
+         WHERE page_meta_id = :id
+         LIMIT 1
+    """), {"id": page_meta_id}).mappings().first()
+    if not row:
+        return None
+    return ProductMeta(
+        name=row["name"],
+        description=row["description"],
+        sku=row["sku"],
+        brand=row["brand"],
+        price_currency=row["price_currency"],
+        price=row["price"],
+        availability=row["availability"],
+        item_condition=row["item_condition"],
+        price_valid_until=row["price_valid_until"],
+        image_urls=_coerce_text_array(row["image_urls"]) or [],
+    )
+
+
+def _fetch_localbiz(db: Session, page_meta_id: int) -> Optional[LocalBusinessMeta]:
+    row = db.execute(text("""
+        SELECT business_name, phone, price_range, street, city, region, zip,
+               latitude, longitude, opening_hours, image_urls
+          FROM metadados.page_meta_localbusiness
+         WHERE page_meta_id = :id
+         LIMIT 1
+    """), {"id": page_meta_id}).mappings().first()
+    if not row:
+        return None
+    return LocalBusinessMeta(
+        business_name=row["business_name"],
+        phone=row["phone"],
+        price_range=row["price_range"],
+        street=row["street"],
+        city=row["city"],
+        region=row["region"],
+        zip=row["zip"],
+        latitude=row["latitude"],
+        longitude=row["longitude"],
+        opening_hours=_coerce_json_list(row["opening_hours"]) or [],
+        image_urls=_coerce_text_array(row["image_urls"]) or [],
+    )
+
+
 def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta]):
     if data is None:
         return
@@ -120,7 +233,8 @@ def _upsert_product(db: Session, page_meta_id: int, data: Optional[ProductMeta])
              availability, item_condition, price_valid_until, image_urls)
         VALUES
             (:id, :name, :description, :sku, :brand, :price_currency, :price,
-             :availability, :item_condition, CAST(:price_valid_until AS date), CAST(:image_urls AS text[]))
+             :availability, :item_condition, CAST(:price_valid_until AS date),
+             CAST(:image_urls AS text[]))
         ON CONFLICT (page_meta_id) DO UPDATE SET
             name = EXCLUDED.name,
             description = EXCLUDED.description,
@@ -442,15 +556,9 @@ def list_page_meta(
     """
     Endpoint público para o pipeline de deploy ler os metadados.
     Filtre sempre por aplicacao_id + rota + lang_tag para resultados precisos.
+    Retorna também os blocos `article`, `product` e `localbusiness`.
     """
-    stmt = (
-        select(PageMeta)
-        .options(
-            selectinload(PageMeta.article),
-            selectinload(PageMeta.product),
-            selectinload(PageMeta.localbusiness),
-        )
-    )
+    stmt = select(PageMeta)
     if aplicacao_id is not None:
         stmt = stmt.where(PageMeta.aplicacao_id == aplicacao_id)
     if rota:
@@ -458,26 +566,68 @@ def list_page_meta(
     if lang_tag:
         stmt = stmt.where(PageMeta.lang_tag == lang_tag)
     stmt = stmt.order_by(PageMeta.id.desc())
-    return db.execute(stmt).scalars().all()
+
+    items = db.execute(stmt).scalars().all()
+
+    result: List[PageMetaOut] = []
+    for it in items:
+        article = _fetch_article(db, it.id)
+        product = _fetch_product(db, it.id)
+        localbiz = _fetch_localbiz(db, it.id)
+
+        result.append(PageMetaOut(
+            id=it.id,
+            aplicacao_id=it.aplicacao_id,
+            rota=it.rota,
+            lang_tag=it.lang_tag,
+            seo_title=it.seo_title,
+            seo_description=it.seo_description,
+            canonical_url=it.canonical_url,
+            og_title=it.og_title,
+            og_description=it.og_description,
+            og_image_url=it.og_image_url,
+            og_type=it.og_type,
+            site_name=it.site_name,
+            created_at=getattr(it, "created_at", None),
+            updated_at=getattr(it, "updated_at", None),
+            article=article,
+            product=product,
+            localbusiness=localbiz,
+        ))
+
+    return result
 
 
 @router.get("/{page_meta_id}", response_model=PageMetaOut)
 def get_page_meta(
     page_meta_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
-    stmt = (
-        select(PageMeta)
-        .options(
-            selectinload(PageMeta.article),
-            selectinload(PageMeta.product),
-            selectinload(PageMeta.localbusiness),
-        )
-        .where(PageMeta.id == page_meta_id)
-        .limit(1)
-    )
-    item = db.execute(stmt).scalars().first()
-    if not item:
+    it = db.get(PageMeta, page_meta_id)
+    if not it:
         raise HTTPException(status_code=404, detail="page_meta não encontrada.")
-    return item
+
+    article = _fetch_article(db, it.id)
+    product = _fetch_product(db, it.id)
+    localbiz = _fetch_localbiz(db, it.id)
+
+    return PageMetaOut(
+        id=it.id,
+        aplicacao_id=it.aplicacao_id,
+        rota=it.rota,
+        lang_tag=it.lang_tag,
+        seo_title=it.seo_title,
+        seo_description=it.seo_description,
+        canonical_url=it.canonical_url,
+        og_title=it.og_title,
+        og_description=it.og_description,
+        og_image_url=it.og_image_url,
+        og_type=it.og_type,
+        site_name=it.site_name,
+        created_at=getattr(it, "created_at", None),
+        updated_at=getattr(it, "updated_at", None),
+        article=article,
+        product=product,
+        localbusiness=localbiz,
+    )
