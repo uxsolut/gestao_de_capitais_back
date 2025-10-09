@@ -9,4 +9,6 @@ from models.carteiras import Carteira
 from models.ativos import Ativo
 from models.relatorios import Relatorio
 from models.logs import Log
+from models.page_meta import PageMeta
+
 

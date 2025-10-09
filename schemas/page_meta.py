@@ -1,34 +1,100 @@
 # schemas/page_meta.py
 # -*- coding: utf-8 -*-
-import re
-from typing import Any, Dict
-from pydantic import BaseModel
+from typing import Optional, List
+from decimal import Decimal
+from datetime import datetime, date
+from pydantic import BaseModel, Field, HttpUrl
 
-_LANG_RE = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*")
 
+# ---------------- Core ----------------
 class PageMetaBase(BaseModel):
-    rota: str = "/"
-    lang_tag: str = "pt-BR"
-    basic_meta: Dict[str, Any] = {}
-    social_og: Dict[str, Any] = {}
-    twitter_meta: Dict[str, Any] = {}
-    jsonld_base: Dict[str, Any] = {}
-    jsonld_product: Dict[str, Any] = {}
-    jsonld_article: Dict[str, Any] = {}
-    jsonld_localbiz: Dict[str, Any] = {}
-    alternates: Dict[str, Any] = {}
-    extras: Dict[str, Any] = {}
+    aplicacao_id: int
+    rota: str
+    lang_tag: str = Field(default="pt-BR")
 
-    # Validaremos rota/lang_tag no router para evitar dependência de decorators de versão
+    # SEO
+    seo_title: str
+    seo_description: str
+    canonical_url: HttpUrl
 
+    # Open Graph
+    og_title: Optional[str] = None
+    og_description: Optional[str] = None
+    og_image_url: Optional[HttpUrl] = None
+    og_type: Optional[str] = "website"
+    site_name: Optional[str] = None
+
+
+# --------------- Blocos opcionais ---------------
+class ArticleMeta(BaseModel):
+    type: Optional[str] = None          # ex.: Article/NewsArticle/BlogPosting
+    headline: Optional[str] = None
+    description: Optional[str] = None
+    author_name: Optional[str] = None
+    date_published: Optional[datetime] = None
+    date_modified: Optional[datetime] = None
+    cover_image_url: Optional[HttpUrl] = None
+
+
+class ProductMeta(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    sku: Optional[str] = None
+    brand: Optional[str] = None
+    price_currency: Optional[str] = None  # ISO 4217
+    price: Optional[Decimal] = None
+    availability: Optional[str] = None    # ex.: InStock
+    item_condition: Optional[str] = None  # ex.: NewCondition
+    price_valid_until: Optional[date] = None
+    image_urls: Optional[List[HttpUrl]] = None
+
+
+class LocalBusinessMeta(BaseModel):
+    business_name: Optional[str] = None
+    phone: Optional[str] = None
+    price_range: Optional[str] = None     # ex.: "$$"
+    street: Optional[str] = None
+    city: Optional[str] = None
+    region: Optional[str] = None
+    zip: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    opening_hours: Optional[List[str]] = None  # guardado como jsonb
+    image_urls: Optional[List[HttpUrl]] = None
+
+
+# --------------- Payloads ---------------
 class PageMetaCreate(PageMetaBase):
-    pass
+    article: Optional[ArticleMeta] = None
+    product: Optional[ProductMeta] = None
+    localbusiness: Optional[LocalBusinessMeta] = None
+
+
+class PageMetaUpdate(BaseModel):
+    # chaves de busca (opcionais no PUT)
+    aplicacao_id: Optional[int] = None
+    rota: Optional[str] = None
+    lang_tag: Optional[str] = None
+
+    # core (todos opcionais no update)
+    seo_title: Optional[str] = None
+    seo_description: Optional[str] = None
+    canonical_url: Optional[HttpUrl] = None
+
+    og_title: Optional[str] = None
+    og_description: Optional[str] = None
+    og_image_url: Optional[HttpUrl] = None
+    og_type: Optional[str] = None
+    site_name: Optional[str] = None
+
+    # blocos opcionais
+    article: Optional[ArticleMeta] = None
+    product: Optional[ProductMeta] = None
+    localbusiness: Optional[LocalBusinessMeta] = None
+
 
 class PageMetaOut(PageMetaBase):
     id: int
-    aplicacao_id: int
 
     class Config:
-        # v1: orm_mode; v2: from_attributes
-        orm_mode = True
         from_attributes = True

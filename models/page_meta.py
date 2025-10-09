@@ -1,39 +1,37 @@
 # models/page_meta.py
 # -*- coding: utf-8 -*-
 from sqlalchemy import (
-    Column, Text, Integer, BigInteger, ForeignKey, UniqueConstraint,
-    TIMESTAMP, func
+    Column, Text, BigInteger, UniqueConstraint, DateTime, func
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 
-# Se você já tem um Base central (ex.: from models.base import Base),
-# pode trocar esta linha pelo seu Base.
+# Caso você já tenha um Base central (ex.: from database import Base), use-o aqui:
+# from database import Base
 Base = declarative_base()
+
 
 class PageMeta(Base):
     __tablename__ = "page_meta"
     __table_args__ = (
+        UniqueConstraint("aplicacao_id", "rota", "lang_tag", name="page_meta_aplicacao_id_rota_lang_tag_key"),
         {"schema": "metadados"},
-        UniqueConstraint("aplicacao_id", "rota", "lang_tag", name="uq_page_meta"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)         # BIGINT
-    aplicacao_id = Column(
-        Integer,
-        ForeignKey("global.aplicacoes.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    rota = Column(Text, nullable=False, default="/")                      # '/' ou '*'
-    lang_tag = Column(Text, nullable=False, default="pt-BR")              # BCP47 (pt-BR, en-US, ...)
-    basic_meta = Column(JSONB, nullable=False, default=dict)
-    social_og = Column(JSONB, nullable=False, default=dict)
-    twitter_meta = Column(JSONB, nullable=False, default=dict)
-    jsonld_base = Column(JSONB, nullable=False, default=dict)
-    jsonld_product = Column(JSONB, nullable=False, default=dict)
-    jsonld_article = Column(JSONB, nullable=False, default=dict)
-    jsonld_localbiz = Column(JSONB, nullable=False, default=dict)
-    alternates = Column(JSONB, nullable=False, default=dict)
-    extras = Column(JSONB, nullable=False, default=dict)
-    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    aplicacao_id = Column(BigInteger, nullable=False)
+    rota = Column(Text, nullable=False)
+    lang_tag = Column(Text, nullable=False)
+
+    # SEO
+    seo_title = Column(Text, nullable=False)
+    seo_description = Column(Text, nullable=False)
+    canonical_url = Column(Text, nullable=False)
+
+    # OG (opcionais com fallback na renderização)
+    og_title = Column(Text, nullable=True)
+    og_description = Column(Text, nullable=True)
+    og_image_url = Column(Text, nullable=True)
+    og_type = Column(Text, nullable=True, default="website")
+    site_name = Column(Text, nullable=True)
+
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
