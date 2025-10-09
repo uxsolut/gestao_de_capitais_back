@@ -3,7 +3,6 @@
 from typing import List, Optional
 import os
 import time
-import json
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Body
@@ -25,7 +24,6 @@ from routers.aplicacoes import (
 from services.deploy_pages_service import GitHubPagesDeployer
 
 router = APIRouter(prefix="/page-meta", tags=["Page Meta"])
-
 
 # ----------------------------- helpers -----------------------------
 def _is_empty_model(data) -> bool:
@@ -57,11 +55,7 @@ def _ensure_leading_slash(path: str) -> str:
 
 
 def _pg_text_array(values: Optional[List[str]]) -> Optional[str]:
-    """
-    Converte lista Python -> literal Postgres text[]: {"a","b"}
-    (escapa aspas e barras).
-    Retorna None se lista vazia/None.
-    """
+    """Converte lista Python -> literal Postgres text[]: {"a","b"}"""
     if not values:
         return None
     def esc(s: str) -> str:
@@ -122,7 +116,7 @@ def _upsert_product(db: Session, page_meta_id: int, data: Optional[ProductMeta])
              availability, item_condition, price_valid_until, image_urls)
         VALUES
             (:id, :name, :description, :sku, :brand, :price_currency, :price,
-             :availability, :item_condition, :price_valid_until, :image_urls::text[])
+             :availability, :item_condition, CAST(:price_valid_until AS date), CAST(:image_urls AS text[]))
         ON CONFLICT (page_meta_id) DO UPDATE SET
             name = EXCLUDED.name,
             description = EXCLUDED.description,
@@ -165,7 +159,7 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
              latitude, longitude, opening_hours, image_urls)
         VALUES
             (:id, :business_name, :phone, :price_range, :street, :city, :region, :zip,
-             :latitude, :longitude, :opening_hours::text[], :image_urls::text[])
+             :latitude, :longitude, CAST(:opening_hours AS text[]), CAST(:image_urls AS text[]))
         ON CONFLICT (page_meta_id) DO UPDATE SET
             business_name = EXCLUDED.business_name,
             phone = EXCLUDED.phone,
@@ -205,7 +199,6 @@ def create_or_update_page_meta_and_deploy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # 1) UPSERT page_meta pela chave composta — usando SQL cru (seleciona só id)
     row = db.execute(text("""
         SELECT id FROM metadados.page_meta
          WHERE aplicacao_id = :ap
@@ -249,14 +242,12 @@ def create_or_update_page_meta_and_deploy(
         db.commit()
         db.refresh(item)
 
-    # 2) Filhos opcionais
     _upsert_article(db, item.id, body.article)
     _upsert_product(db, item.id, body.product)
     _upsert_localbiz(db, item.id, body.localbusiness)
     db.commit()
     db.refresh(item)
 
-    # 3) Preparação do ZIP + status
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
@@ -301,7 +292,6 @@ def create_or_update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
-            # apaga destino (idempotente) e faz deploy
             GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
@@ -335,7 +325,6 @@ def update_page_meta_and_deploy(
         new_ro = _ensure_leading_slash(body.rota) if body.rota is not None else item.rota
         new_la = body.lang_tag or item.lang_tag
 
-        # checa conflito via SQL cru (só id)
         row = db.execute(text("""
             SELECT id FROM metadados.page_meta
              WHERE id <> :cur
@@ -368,7 +357,6 @@ def update_page_meta_and_deploy(
     db.commit()
     db.refresh(item)
 
-    # Deploy (igual ao POST)
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
