@@ -295,7 +295,6 @@ def create_or_update_page_meta_and_deploy(
                 id_empresa=id_empresa,
                 aplicacao_id=str(body.aplicacao_id),
                 api_base=API_BASE_FOR_ACTIONS,
-                # ⬇️ Removidos: meta_rota / meta_lang / page_meta_id
             )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Metadados salvos, status atualizado, mas falhou o deploy: {e}")
@@ -406,7 +405,6 @@ def update_page_meta_and_deploy(
                 id_empresa=id_empresa,
                 aplicacao_id=str(item.aplicacao_id),
                 api_base=API_BASE_FOR_ACTIONS,
-                # ⬇️ Removidos: meta_rota / meta_lang / page_meta_id
             )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Metadados atualizados, mas falhou o deploy: {e}")
@@ -415,14 +413,21 @@ def update_page_meta_and_deploy(
 
 
 # --------------------------- GETs ---------------------------
-@router.get("/", response_model=List[PageMetaOut])
+@router.get(
+    "/", 
+    response_model=List[PageMetaOut], 
+    summary="(PÚBLICO) Lista Page Meta filtrando por aplicação/rota/lang"
+)
 def list_page_meta(
     aplicacao_id: Optional[int] = Query(default=None),
     rota: Optional[str] = Query(default=None),
     lang_tag: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
 ):
+    """
+    Endpoint público para o pipeline de deploy ler os metadados.
+    Filtre sempre por aplicacao_id + rota + lang_tag para resultados precisos.
+    """
     stmt = select(PageMeta)
     if aplicacao_id is not None:
         stmt = stmt.where(PageMeta.aplicacao_id == aplicacao_id)
