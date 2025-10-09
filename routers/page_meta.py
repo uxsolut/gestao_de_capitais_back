@@ -18,8 +18,6 @@ from schemas.page_meta import (
     PageMetaCreate, PageMetaUpdate, PageMetaOut,
     ArticleMeta, ProductMeta, LocalBusinessMeta
 )
-
-# Reuso do router de aplicações
 from routers.aplicacoes import (
     _empresa_segment, _deploy_slug,
     BASE_UPLOADS_DIR, BASE_UPLOADS_URL, API_BASE_FOR_ACTIONS
@@ -29,15 +27,10 @@ from services.deploy_pages_service import GitHubPagesDeployer
 router = APIRouter(prefix="/page-meta", tags=["Page Meta"])
 
 
-# --------------------------------- helpers ---------------------------------
+# ----------------------------- helpers -----------------------------
 def _is_empty_model(data) -> bool:
-    """
-    Considera "vazio" quando todos os campos são None.
-    Compatível com Pydantic v1/v2.
-    """
     if data is None:
         return True
-    # v2: model_dump; v1: dict()
     try:
         payload = data.model_dump()
     except Exception:
@@ -45,13 +38,11 @@ def _is_empty_model(data) -> bool:
             payload = data.dict()
         except Exception:
             return False
-    # Se só tiver None (ou strings vazias/branco), considera vazio
     for v in payload.values():
         if v is None:
             continue
         if isinstance(v, str) and v.strip() == "":
             continue
-        # listas vazias ou dicts vazios contam como vazio
         if isinstance(v, (list, dict)) and len(v) == 0:
             continue
         return False
@@ -74,7 +65,6 @@ def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta])
             {"id": page_meta_id},
         )
         return
-
     db.execute(text("""
         INSERT INTO metadados.page_meta_article
             (page_meta_id, type, headline, description, author_name,
@@ -112,7 +102,6 @@ def _upsert_product(db: Session, page_meta_id: int, data: Optional[ProductMeta])
             {"id": page_meta_id},
         )
         return
-
     db.execute(text("""
         INSERT INTO metadados.page_meta_product
             (page_meta_id, name, description, sku, brand, price_currency, price,
@@ -139,12 +128,10 @@ def _upsert_product(db: Session, page_meta_id: int, data: Optional[ProductMeta])
         "sku": data.sku,
         "brand": data.brand,
         "price_currency": data.price_currency,
-        # Decimal vai direto para NUMERIC:
         "price": data.price if isinstance(data.price, (Decimal, type(None))) else None,
         "availability": data.availability,
         "item_condition": data.item_condition,
         "price_valid_until": data.price_valid_until,
-        # jsonb
         "image_urls": json.dumps([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
     })
 
@@ -158,7 +145,6 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
             {"id": page_meta_id},
         )
         return
-
     db.execute(text("""
         INSERT INTO metadados.page_meta_localbusiness
             (page_meta_id, business_name, phone, price_range, street, city, region, zip,
@@ -190,13 +176,12 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
         "zip": data.zip,
         "latitude": data.latitude,
         "longitude": data.longitude,
-        # jsonb
         "opening_hours": json.dumps(list(data.opening_hours)) if data.opening_hours else None,
         "image_urls": json.dumps([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
     })
 
 
-# --------------------------- POST (JSON) + deploy ZIP ---------------------------
+# --------------------------- POST (UPSERT + deploy) ---------------------------
 @router.post(
     "/", response_model=PageMetaOut, status_code=status.HTTP_201_CREATED,
     summary="Cria/atualiza Page Meta e dispara deploy reaproveitando o ZIP salvo"
@@ -206,17 +191,21 @@ def create_or_update_page_meta_and_deploy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # 1) UPSERT page_meta (aplicacao_id + rota + lang_tag)
-    exists = db.execute(
-        select(PageMeta).where(
-            PageMeta.aplicacao_id == body.aplicacao_id,
-            PageMeta.rota == _ensure_leading_slash(body.rota),
-            PageMeta.lang_tag == body.lang_tag,
-        )
-    ).scalar_one_or_none()
+    # 1) UPSERT page_meta pela chave composta — usando SQL cru (seleciona só id)
+    row = db.execute(text("""
+        SELECT id FROM metadados.page_meta
+         WHERE aplicacao_id = :ap
+           AND rota = :ro
+           AND lang_tag = :la
+         LIMIT 1
+    """), {
+        "ap": body.aplicacao_id,
+        "ro": _ensure_leading_slash(body.rota),
+        "la": body.lang_tag,
+    }).mappings().first()
 
-    if exists:
-        item = exists
+    if row:
+        item = db.get(PageMeta, row["id"])
         item.seo_title = body.seo_title
         item.seo_description = body.seo_description
         item.canonical_url = str(body.canonical_url)
@@ -246,14 +235,14 @@ def create_or_update_page_meta_and_deploy(
         db.commit()
         db.refresh(item)
 
-    # 2) Filhos (opcionais)
+    # 2) Filhos opcionais
     _upsert_article(db, item.id, body.article)
     _upsert_product(db, item.id, body.product)
     _upsert_localbiz(db, item.id, body.localbusiness)
     db.commit()
     db.refresh(item)
 
-    # 3) ZIP reaproveitado de global.aplicacoes + status 'em andamento'
+    # 3) Preparação do ZIP + status
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
@@ -268,14 +257,13 @@ def create_or_update_page_meta_and_deploy(
 
         if not app_row:
             raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
-
         zip_bytes: bytes = app_row["arquivo_zip"]
         if not zip_bytes:
             raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
 
-        dominio = app_row["dominio"]
-        slug = app_row["slug"]
-        estado = app_row["estado"]
+        dominio    = app_row["dominio"]
+        slug       = app_row["slug"]
+        estado     = app_row["estado"]
         id_empresa = app_row["id_empresa"]
 
         ts = int(time.time())
@@ -285,7 +273,6 @@ def create_or_update_page_meta_and_deploy(
             f.write(zip_bytes)
         zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
 
-        # status 'em andamento'
         conn.execute(text("""
             INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
             VALUES (:id, 'em andamento', NULL)
@@ -298,7 +285,6 @@ def create_or_update_page_meta_and_deploy(
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)
 
-    # 4) Dispatch do workflow
     try:
         if slug_deploy is not None:
             GitHubPagesDeployer().dispatch(
@@ -319,7 +305,7 @@ def create_or_update_page_meta_and_deploy(
     return item
 
 
-# --------------------------- PUT (JSON) + deploy ZIP ---------------------------
+# --------------------------- PUT (update + deploy) ---------------------------
 @router.put("/{page_meta_id}", response_model=PageMetaOut)
 def update_page_meta_and_deploy(
     page_meta_id: int,
@@ -331,21 +317,23 @@ def update_page_meta_and_deploy(
     if not item:
         raise HTTPException(status_code=404, detail="page_meta não encontrada.")
 
-    # Atualiza chave composta se enviado (previne conflito)
     if body.aplicacao_id or body.rota or body.lang_tag:
         new_ap = body.aplicacao_id or item.aplicacao_id
         new_ro = _ensure_leading_slash(body.rota) if body.rota is not None else item.rota
         new_la = body.lang_tag or item.lang_tag
-        conflict = db.execute(
-            select(PageMeta).where(
-                PageMeta.id != page_meta_id,
-                PageMeta.aplicacao_id == new_ap,
-                PageMeta.rota == new_ro,
-                PageMeta.lang_tag == new_la,
-            )
-        ).scalar_one_or_none()
-        if conflict:
+
+        # checa conflito via SQL cru (só id)
+        row = db.execute(text("""
+            SELECT id FROM metadados.page_meta
+             WHERE id <> :cur
+               AND aplicacao_id = :ap
+               AND rota = :ro
+               AND lang_tag = :la
+             LIMIT 1
+        """), {"cur": page_meta_id, "ap": new_ap, "ro": new_ro, "la": new_la}).mappings().first()
+        if row:
             raise HTTPException(status_code=409, detail="Conflito com (aplicacao_id, rota, lang_tag).")
+
         item.aplicacao_id, item.rota, item.lang_tag = new_ap, new_ro, new_la
 
     for field in ["seo_title", "seo_description", "og_title", "og_description", "og_type", "site_name"]:
@@ -367,7 +355,7 @@ def update_page_meta_and_deploy(
     db.commit()
     db.refresh(item)
 
-    # Deploy (mesmo fluxo do POST)
+    # Deploy (igual ao POST)
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
@@ -386,9 +374,9 @@ def update_page_meta_and_deploy(
         if not zip_bytes:
             raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
 
-        dominio = app_row["dominio"]
-        slug = app_row["slug"]
-        estado = app_row["estado"]
+        dominio    = app_row["dominio"]
+        slug       = app_row["slug"]
+        estado     = app_row["estado"]
         id_empresa = app_row["id_empresa"]
 
         ts = int(time.time())
@@ -451,11 +439,7 @@ def list_page_meta(
 
 
 @router.get("/{page_meta_id}", response_model=PageMetaOut)
-def get_page_meta(
-    page_meta_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
+def get_page_meta(page_meta_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     item = db.get(PageMeta, page_meta_id)
     if not item:
         raise HTTPException(status_code=404, detail="page_meta não encontrada.")
