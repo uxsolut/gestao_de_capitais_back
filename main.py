@@ -13,7 +13,7 @@ from config import settings
 from database import engine, Base
 from middleware.error_handler import ErrorHandlerMiddleware
 
-# --- Carrega models para garantir os mapeamentos/tabelas ---
+# -- Carrega models para garantir os mapeamentos/tabelas --
 from models import corretoras  # noqa: F401
 from models import robos as m_robos  # noqa: F401
 from models import requisicoes as m_requisicao  # noqa: F401
