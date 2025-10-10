@@ -2,6 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from dotenv import load_dotenv, find_dotenv
@@ -21,7 +22,7 @@ from models import tipo_de_ordem as m_tipo_de_ordem  # noqa: F401
 from models import ordens as m_ordens  # noqa: F401
 from models import aplicacoes as m_aplicacoes  # noqa: F401
 from models import empresas as m_empresas  # noqa: F401
-from models import page_meta as m_page_meta
+from models import page_meta as m_page_meta  # noqa: F401
 
 # --- Routers da aplicação ---
 from routers import (
@@ -43,6 +44,7 @@ from routers import empresas as r_empresas
 from routers.miniapis import router as miniapis_router
 from routers import status_aplicacao  # status da aplicação
 from routers import page_meta as r_page_meta
+from routers import media as r_media  # <<< ADICIONADO
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -111,6 +113,15 @@ def create_app(mode: str = "all") -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Monta /uploads pelo app também (útil em dev; em produção o Nginx atende antes)
+    base_uploads_dir = os.getenv("BASE_UPLOADS_DIR", "/var/www/uploads")
+    try:
+        if os.path.isdir(base_uploads_dir):
+            app.mount("/uploads", StaticFiles(directory=base_uploads_dir), name="uploads")
+    except Exception:
+        # não derruba a app se não existir
+        pass
+
     # Raiz simples
     @app.get("/")
     def read_root():
@@ -145,6 +156,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)
         app.include_router(r_page_meta.router, tags=["Page Meta"])
+        app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
 
     elif mode == "all":
         app.include_router(ordens.router)
@@ -163,6 +175,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_analises.router, tags=["Análises"])
         app.include_router(status_aplicacao.router)
         app.include_router(r_page_meta.router, tags=["Page Meta"])
+        app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
