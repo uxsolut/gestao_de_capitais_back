@@ -77,9 +77,11 @@ def _pg_text_array(values: Optional[List[str]]) -> Optional[str]:
     """Converte lista Python -> literal Postgres text[]: {"a","b"}"""
     if not values:
         return None
+
     def esc(s: str) -> str:
         s = s.replace("\\", "\\\\").replace('"', '\\"')
         return s
+
     return "{" + ",".join(f'"{esc(str(v))}"' for v in values) + "}"
 
 
@@ -322,7 +324,7 @@ def create_or_update_page_meta_and_deploy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Vamos buscar a URL completa da aplicação (para canonical e rota)
+    # 0) Busca dados da aplicação (para canonical e rota)
     with engine.begin() as conn:
         app_row = conn.execute(text("""
             SELECT
@@ -344,7 +346,7 @@ def create_or_update_page_meta_and_deploy(
     canonical_from_app = app_row["url_completa"]
     rota_from_app = _url_path_only(canonical_from_app)
 
-    # 1) UPSERT page_meta pela chave composta (usando rota derivada)
+    # 1) UPSERT page_meta pela chave composta (rota derivada)
     derived_rota = rota_from_app
     row = db.execute(text("""
         SELECT id FROM metadados.page_meta
@@ -359,7 +361,7 @@ def create_or_update_page_meta_and_deploy(
         item.rota = derived_rota
         item.seo_title = body.seo_title
         item.seo_description = body.seo_description
-        item.canonical_url = canonical_from_app  # automático
+        item.canonical_url = canonical_from_app
         item.og_title = body.og_title
         item.og_description = body.og_description
         item.og_image_url = str(body.og_image_url) if body.og_image_url else None
@@ -375,7 +377,7 @@ def create_or_update_page_meta_and_deploy(
             lang_tag=body.lang_tag,
             seo_title=body.seo_title,
             seo_description=body.seo_description,
-            canonical_url=canonical_from_app,  # automático
+            canonical_url=canonical_from_app,
             og_title=body.og_title,
             og_description=body.og_description,
             og_image_url=str(body.og_image_url) if body.og_image_url else None,
@@ -393,13 +395,12 @@ def create_or_update_page_meta_and_deploy(
     db.commit()
     db.refresh(item)
 
-    # 3) Preparação do ZIP + status/deploy (inalterado)
+    # 3) Preparação do ZIP + status/deploy
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
 
     with engine.begin() as conn:
-        # reusa app_row já lido acima para zip/estado/etc.
         zip_bytes: bytes = app_row["arquivo_zip"]
         if not zip_bytes:
             raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
@@ -476,9 +477,8 @@ def update_page_meta_and_deploy(
     canonical_from_app = app_row["url_completa"]
     rota_from_app = _url_path_only(canonical_from_app)
 
-    # Pode mudar chaves
     new_ap = body.aplicacao_id or item.aplicacao_id
-    new_ro = rota_from_app  # rota automática
+    new_ro = rota_from_app
     new_la = body.lang_tag or item.lang_tag
 
     # checa conflito
@@ -565,27 +565,18 @@ def update_page_meta_and_deploy(
     return PageMetaOut(**_to_out_dict(item, ch[item.id]))
 
 
-# --------------------------- GETs ---------------------------
+# --------------------------- GET (apenas por aplicacao_id) ---------------------------
 @router.get(
     "/",
     response_model=List[PageMetaOut],
-    summary="(PÚBLICO) Lista Page Meta filtrando por aplicação/rota/lang"
+    summary="(PÚBLICO) Lista Page Meta por aplicacao_id (sem rota/lang)"
 )
-def list_page_meta(
-    aplicacao_id: Optional[int] = Query(default=None),
-    rota: Optional[str] = Query(default=None),
-    lang_tag: Optional[str] = Query(default=None),
+def list_page_meta_by_app(
+    aplicacao_id: int = Query(..., description="ID da aplicação"),
     db: Session = Depends(get_db),
 ):
-    stmt = select(PageMeta)
-    if aplicacao_id is not None:
-        stmt = stmt.where(PageMeta.aplicacao_id == aplicacao_id)
-    if rota:
-        stmt = stmt.where(PageMeta.rota == _ensure_leading_slash(rota))
-    if lang_tag:
-        stmt = stmt.where(PageMeta.lang_tag == lang_tag)
-    stmt = stmt.order_by(PageMeta.id.desc())
-
+    # base
+    stmt = select(PageMeta).where(PageMeta.aplicacao_id == aplicacao_id).order_by(PageMeta.id.desc())
     bases = db.execute(stmt).scalars().all()
     if not bases:
         return []
