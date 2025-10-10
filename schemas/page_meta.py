@@ -33,7 +33,7 @@ class ArticleMeta(BaseModel):
     author_name: Optional[str] = None
     date_published: Optional[datetime] = None
     date_modified: Optional[datetime] = None
-    cover_image_url: Optional[HttpUrl] = None
+    image_urls: Optional[List[HttpUrl]] = None
 
 
 class ProductMeta(BaseModel):
@@ -61,6 +61,7 @@ class LocalBusinessMeta(BaseModel):
     longitude: Optional[float] = None
     opening_hours: Optional[List[str]] = None  # jsonb
     image_urls: Optional[List[HttpUrl]] = None
+    logo_url: Optional[HttpUrl] = None
 
 
 # --------------- Payloads ---------------

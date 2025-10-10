@@ -78,10 +78,10 @@ def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta])
     db.execute(text("""
         INSERT INTO metadados.page_meta_article
             (page_meta_id, type, headline, description, author_name,
-             date_published, date_modified, cover_image_url)
+             date_published, date_modified, image_urls)
         VALUES
             (:id, :type, :headline, :description, :author_name,
-             :date_published, :date_modified, :cover_image_url)
+             :date_published, :date_modified, CAST(:image_urls AS text[]))
         ON CONFLICT (page_meta_id) DO UPDATE SET
             type = EXCLUDED.type,
             headline = EXCLUDED.headline,
@@ -89,7 +89,7 @@ def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta])
             author_name = EXCLUDED.author_name,
             date_published = EXCLUDED.date_published,
             date_modified = EXCLUDED.date_modified,
-            cover_image_url = EXCLUDED.cover_image_url,
+            image_urls = EXCLUDED.image_urls,
             updated_at = now()
     """), {
         "id": page_meta_id,
@@ -99,7 +99,7 @@ def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta])
         "author_name": data.author_name,
         "date_published": data.date_published,
         "date_modified": data.date_modified,
-        "cover_image_url": str(data.cover_image_url) if data.cover_image_url else None,
+        "image_urls": _pg_text_array([str(u) for u in (getattr(data, "image_urls", []) or [])]) if getattr(data, "image_urls", None) else None,
     })
 
 
@@ -158,10 +158,10 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
     db.execute(text("""
         INSERT INTO metadados.page_meta_localbusiness
             (page_meta_id, business_name, phone, price_range, street, city, region, zip,
-             latitude, longitude, opening_hours, image_urls)
+             latitude, longitude, opening_hours, image_urls, logo_url)
         VALUES
             (:id, :business_name, :phone, :price_range, :street, :city, :region, :zip,
-             :latitude, :longitude, CAST(:opening_hours AS jsonb), CAST(:image_urls AS text[]))
+             :latitude, :longitude, CAST(:opening_hours AS jsonb), CAST(:image_urls AS text[]), :logo_url)
         ON CONFLICT (page_meta_id) DO UPDATE SET
             business_name = EXCLUDED.business_name,
             phone = EXCLUDED.phone,
@@ -174,6 +174,7 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
             longitude = EXCLUDED.longitude,
             opening_hours = EXCLUDED.opening_hours,
             image_urls = EXCLUDED.image_urls,
+            logo_url = EXCLUDED.logo_url,
             updated_at = now()
     """), {
         "id": page_meta_id,
@@ -188,6 +189,7 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
         "longitude": data.longitude,
         "opening_hours": json.dumps(list(data.opening_hours)) if data.opening_hours else json.dumps([]),
         "image_urls": _pg_text_array([str(u) for u in (data.image_urls or [])]) if data.image_urls else None,
+        "logo_url": str(getattr(data, "logo_url")) if getattr(data, "logo_url", None) else None,
     })
 
 
@@ -204,11 +206,14 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
     # ARTICLE
     rows = db.execute(text("""
         SELECT page_meta_id, type, headline, description, author_name,
-               date_published, date_modified, cover_image_url
+               date_published, date_modified, image_urls
           FROM metadados.page_meta_article
          WHERE page_meta_id = ANY(:ids)
     """), {"ids": ids}).mappings().all()
     for r in rows:
+        imgs = r["image_urls"]
+        if isinstance(imgs, str):
+            imgs = [s for s in imgs.strip("{}").split(",") if s != ""]
         out[r["page_meta_id"]]["article"] = {
             "type": r["type"],
             "headline": r["headline"],
@@ -216,7 +221,7 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
             "author_name": r["author_name"],
             "date_published": r["date_published"],
             "date_modified": r["date_modified"],
-            "cover_image_url": r["cover_image_url"],
+            "image_urls": imgs,
         }
 
     # PRODUCT
@@ -248,7 +253,7 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
     # LOCALBUSINESS
     rows = db.execute(text("""
         SELECT page_meta_id, business_name, phone, price_range, street, city, region, zip,
-               latitude, longitude, opening_hours, image_urls
+               latitude, longitude, opening_hours, image_urls, logo_url
           FROM metadados.page_meta_localbusiness
          WHERE page_meta_id = ANY(:ids)
     """), {"ids": ids}).mappings().all()
@@ -275,6 +280,7 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
             "longitude": r["longitude"],
             "opening_hours": hours or [],
             "image_urls": imgs,
+            "logo_url": r["logo_url"],
         }
 
     return out
@@ -569,7 +575,7 @@ def list_page_meta(
     # 2) filhos em lote
     art_rows = db.execute(text("""
         SELECT page_meta_id, type, headline, description, author_name,
-               date_published, date_modified, cover_image_url
+               date_published, date_modified, image_urls
           FROM metadados.page_meta_article
          WHERE page_meta_id = ANY(:ids)
     """), {"ids": ids}).mappings().all()
@@ -583,7 +589,7 @@ def list_page_meta(
 
     biz_rows = db.execute(text("""
         SELECT page_meta_id, business_name, phone, price_range, street, city, region, zip,
-               latitude, longitude, opening_hours, image_urls
+               latitude, longitude, opening_hours, image_urls, logo_url
           FROM metadados.page_meta_localbusiness
          WHERE page_meta_id = ANY(:ids)
     """), {"ids": ids}).mappings().all()
@@ -615,6 +621,9 @@ def list_page_meta(
 
         ar = by_art.get(b.id)
         if ar:
+            imgs = ar["image_urls"] if isinstance(ar["image_urls"], list) else ar["image_urls"]
+            if isinstance(imgs, str):
+                imgs = [s for s in imgs.strip("{}").split(",") if s != ""]
             item["article"] = {
                 "type": ar["type"],
                 "headline": ar["headline"],
@@ -622,7 +631,7 @@ def list_page_meta(
                 "author_name": ar["author_name"],
                 "date_published": ar["date_published"],
                 "date_modified": ar["date_modified"],
-                "cover_image_url": ar["cover_image_url"],
+                "image_urls": imgs,
             }
 
         pr = by_prod.get(b.id)
@@ -656,6 +665,7 @@ def list_page_meta(
                 "longitude": bz["longitude"],
                 "opening_hours": bz["opening_hours"],
                 "image_urls": imgs,
+                "logo_url": bz["logo_url"],
             }
 
         out.append(item)
