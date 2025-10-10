@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 from typing import Optional, List
 from decimal import Decimal
-from datetime import datetime, date
+from datetime import date
 from pydantic import BaseModel, Field, HttpUrl
 
 
-# ---------------- Core ----------------
-class PageMetaBase(BaseModel):
+# ---------------- Core (Entrada) ----------------
+class PageMetaBaseIn(BaseModel):
     aplicacao_id: int
     rota: str
     lang_tag: str = Field(default="pt-BR")
@@ -15,7 +15,6 @@ class PageMetaBase(BaseModel):
     # SEO
     seo_title: str
     seo_description: str
-    canonical_url: HttpUrl
 
     # Open Graph
     og_title: Optional[str] = None
@@ -31,8 +30,7 @@ class ArticleMeta(BaseModel):
     headline: Optional[str] = None
     description: Optional[str] = None
     author_name: Optional[str] = None
-    date_published: Optional[datetime] = None
-    date_modified: Optional[datetime] = None
+    # Datas removidas (agora não existem no payload nem no banco)
     image_urls: Optional[List[HttpUrl]] = None
 
 
@@ -43,8 +41,8 @@ class ProductMeta(BaseModel):
     brand: Optional[str] = None
     price_currency: Optional[str] = None  # ISO 4217
     price: Optional[Decimal] = None
-    availability: Optional[str] = None    # InStock
-    item_condition: Optional[str] = None  # NewCondition
+    availability: Optional[str] = None    # e.g. https://schema.org/InStock
+    item_condition: Optional[str] = None  # e.g. https://schema.org/NewCondition
     price_valid_until: Optional[date] = None
     image_urls: Optional[List[HttpUrl]] = None
 
@@ -65,7 +63,7 @@ class LocalBusinessMeta(BaseModel):
 
 
 # --------------- Payloads ---------------
-class PageMetaCreate(PageMetaBase):
+class PageMetaCreate(PageMetaBaseIn):
     article: Optional[ArticleMeta] = None
     product: Optional[ProductMeta] = None
     localbusiness: Optional[LocalBusinessMeta] = None
@@ -80,7 +78,7 @@ class PageMetaUpdate(BaseModel):
     # core (opcionais)
     seo_title: Optional[str] = None
     seo_description: Optional[str] = None
-    canonical_url: Optional[HttpUrl] = None
+    # canonical_url removido da entrada (é automático no backend)
 
     og_title: Optional[str] = None
     og_description: Optional[str] = None
@@ -94,9 +92,12 @@ class PageMetaUpdate(BaseModel):
     localbusiness: Optional[LocalBusinessMeta] = None
 
 
-class PageMetaOut(PageMetaBase):
+# ---------------- Saída ----------------
+class PageMetaOut(PageMetaBaseIn):
     id: int
-    # 🔹 expostos no output
+    canonical_url: HttpUrl  # fornecida automaticamente pelo backend
+
+    # 🔹 blocos expostos no output
     article: Optional[ArticleMeta] = None
     product: Optional[ProductMeta] = None
     localbusiness: Optional[LocalBusinessMeta] = None

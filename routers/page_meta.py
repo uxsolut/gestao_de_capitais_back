@@ -56,17 +56,29 @@ def _ensure_leading_slash(path: str) -> str:
     return path if path.startswith("/") else f"/{path}"
 
 
+def _url_join(base: Optional[str], path: str) -> Optional[str]:
+    """Junta base + path garantindo exatamente uma barra entre eles."""
+    if not base:
+        return None
+    base = base.rstrip("/")
+    path = _ensure_leading_slash(path)
+    return f"{base}{path}"
+
+
 def _pg_text_array(values: Optional[List[str]]) -> Optional[str]:
     """Converte lista Python -> literal Postgres text[]: {"a","b"}"""
     if not values:
         return None
+
     def esc(s: str) -> str:
         s = s.replace("\\", "\\\\").replace('"', '\\"')
         return s
+
     return "{" + ",".join(f'"{esc(str(v))}"' for v in values) + "}"
 
 
 def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta]):
+    """Agora sem campos de data (date_published/date_modified)"""
     if data is None:
         return
     if _is_empty_model(data):
@@ -77,18 +89,14 @@ def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta])
         return
     db.execute(text("""
         INSERT INTO metadados.page_meta_article
-            (page_meta_id, type, headline, description, author_name,
-             date_published, date_modified, image_urls)
+            (page_meta_id, type, headline, description, author_name, image_urls)
         VALUES
-            (:id, :type, :headline, :description, :author_name,
-             :date_published, :date_modified, CAST(:image_urls AS text[]))
+            (:id, :type, :headline, :description, :author_name, CAST(:image_urls AS text[]))
         ON CONFLICT (page_meta_id) DO UPDATE SET
             type = EXCLUDED.type,
             headline = EXCLUDED.headline,
             description = EXCLUDED.description,
             author_name = EXCLUDED.author_name,
-            date_published = EXCLUDED.date_published,
-            date_modified = EXCLUDED.date_modified,
             image_urls = EXCLUDED.image_urls,
             updated_at = now()
     """), {
@@ -97,8 +105,6 @@ def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta])
         "headline": data.headline,
         "description": data.description,
         "author_name": data.author_name,
-        "date_published": data.date_published,
-        "date_modified": data.date_modified,
         "image_urls": _pg_text_array([str(u) for u in (getattr(data, "image_urls", []) or [])]) if getattr(data, "image_urls", None) else None,
     })
 
@@ -203,10 +209,9 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
     if not ids:
         return out
 
-    # ARTICLE
+    # ARTICLE (sem datas)
     rows = db.execute(text("""
-        SELECT page_meta_id, type, headline, description, author_name,
-               date_published, date_modified, image_urls
+        SELECT page_meta_id, type, headline, description, author_name, image_urls
           FROM metadados.page_meta_article
          WHERE page_meta_id = ANY(:ids)
     """), {"ids": ids}).mappings().all()
@@ -219,8 +224,6 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
             "headline": r["headline"],
             "description": r["description"],
             "author_name": r["author_name"],
-            "date_published": r["date_published"],
-            "date_modified": r["date_modified"],
             "image_urls": imgs,
         }
 
@@ -232,10 +235,8 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
          WHERE page_meta_id = ANY(:ids)
     """), {"ids": ids}).mappings().all()
     for r in rows:
-        # image_urls é text[] → converte para python list (psycopg2 já pode trazer list; se vier como str, tenta json.loads)
         imgs = r["image_urls"]
         if isinstance(imgs, str):
-            # quando vem no formato {"a","b"}, quebra simples:
             imgs = [s for s in imgs.strip("{}").split(",") if s != ""]
         out[r["page_meta_id"]]["product"] = {
             "name": r["name"],
@@ -262,7 +263,6 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
         if isinstance(imgs, str):
             imgs = [s for s in imgs.strip("{}").split(",") if s != ""]
         hours = r["opening_hours"]
-        # opening_hours é jsonb
         if isinstance(hours, str):
             try:
                 hours = json.loads(hours)
@@ -317,6 +317,18 @@ def create_or_update_page_meta_and_deploy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Pré-carrega a aplicação para montar canonical_url automaticamente
+    app_conf = db.execute(text("""
+        SELECT url_completa::text AS url_completa
+          FROM global.aplicacoes
+         WHERE id = :id
+         LIMIT 1
+    """), {"id": body.aplicacao_id}).mappings().first()
+    if not app_conf:
+        raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado (canonical).")
+
+    computed_canonical = _url_join(app_conf["url_completa"], _ensure_leading_slash(body.rota))
+
     # 1) UPSERT page_meta pela chave composta
     row = db.execute(text("""
         SELECT id FROM metadados.page_meta
@@ -334,7 +346,7 @@ def create_or_update_page_meta_and_deploy(
         item = db.get(PageMeta, row["id"])
         item.seo_title = body.seo_title
         item.seo_description = body.seo_description
-        item.canonical_url = str(body.canonical_url)
+        item.canonical_url = computed_canonical  # <-- automática
         item.og_title = body.og_title
         item.og_description = body.og_description
         item.og_image_url = str(body.og_image_url) if body.og_image_url else None
@@ -350,7 +362,7 @@ def create_or_update_page_meta_and_deploy(
             lang_tag=body.lang_tag,
             seo_title=body.seo_title,
             seo_description=body.seo_description,
-            canonical_url=str(body.canonical_url),
+            canonical_url=computed_canonical,  # <-- automática
             og_title=body.og_title,
             og_description=body.og_description,
             og_image_url=str(body.og_image_url) if body.og_image_url else None,
@@ -361,7 +373,7 @@ def create_or_update_page_meta_and_deploy(
         db.commit()
         db.refresh(item)
 
-    # 2) Filhos opcionais
+    # 2) Filhos opcionais (artigo sem datas)
     _upsert_article(db, item.id, body.article)
     _upsert_product(db, item.id, body.product)
     _upsert_localbiz(db, item.id, body.localbusiness)
@@ -428,7 +440,6 @@ def create_or_update_page_meta_and_deploy(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Metadados salvos, status atualizado, mas falhou o deploy: {e}")
 
-    # monta resposta com filhos
     ch = _fetch_children(db, [item.id])
     return PageMetaOut(**_to_out_dict(item, ch[item.id]))
 
@@ -464,13 +475,22 @@ def update_page_meta_and_deploy(
 
         item.aplicacao_id, item.rota, item.lang_tag = new_ap, new_ro, new_la
 
+    # Recalcula canonical_url automaticamente se mudaram app/rota
+    app_conf = db.execute(text("""
+        SELECT url_completa::text AS url_completa
+          FROM global.aplicacoes
+         WHERE id = :id
+         LIMIT 1
+    """), {"id": item.aplicacao_id}).mappings().first()
+    computed_canonical = _url_join(app_conf["url_completa"] if app_conf else None, item.rota)
+    if computed_canonical:
+        item.canonical_url = computed_canonical
+
     for field in ["seo_title", "seo_description", "og_title", "og_description", "og_type", "site_name"]:
         val = getattr(body, field, None)
         if val is not None:
             setattr(item, field, val)
 
-    if body.canonical_url is not None:
-        item.canonical_url = str(body.canonical_url)
     if body.og_image_url is not None:
         item.og_image_url = str(body.og_image_url)
 
@@ -574,8 +594,7 @@ def list_page_meta(
 
     # 2) filhos em lote
     art_rows = db.execute(text("""
-        SELECT page_meta_id, type, headline, description, author_name,
-               date_published, date_modified, image_urls
+        SELECT page_meta_id, type, headline, description, author_name, image_urls
           FROM metadados.page_meta_article
          WHERE page_meta_id = ANY(:ids)
     """), {"ids": ids}).mappings().all()
@@ -629,8 +648,6 @@ def list_page_meta(
                 "headline": ar["headline"],
                 "description": ar["description"],
                 "author_name": ar["author_name"],
-                "date_published": ar["date_published"],
-                "date_modified": ar["date_modified"],
                 "image_urls": imgs,
             }
 
@@ -671,6 +688,7 @@ def list_page_meta(
         out.append(item)
 
     return out
+
 
 @router.get("/{page_meta_id}", response_model=PageMetaOut)
 def get_page_meta(
