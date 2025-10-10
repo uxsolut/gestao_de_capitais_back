@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field, HttpUrl
 # ---------------- Core (Entrada) ----------------
 class PageMetaBaseIn(BaseModel):
     aplicacao_id: int
-    rota: str
+    # rota pode ser omitida no POST/PUT; o backend pode inferir a partir da URL da aplicação
+    rota: Optional[str] = None
     lang_tag: str = Field(default="pt-BR")
 
     # SEO
@@ -30,7 +31,7 @@ class ArticleMeta(BaseModel):
     headline: Optional[str] = None
     description: Optional[str] = None
     author_name: Optional[str] = None
-    # Datas removidas (agora não existem no payload nem no banco)
+    # Datas removidas (não existem mais no payload/banco)
     image_urls: Optional[List[HttpUrl]] = None
 
 
@@ -39,10 +40,10 @@ class ProductMeta(BaseModel):
     description: Optional[str] = None
     sku: Optional[str] = None
     brand: Optional[str] = None
-    price_currency: Optional[str] = None  # ISO 4217
+    price_currency: Optional[str] = None  # ISO 4217 (ex.: BRL)
     price: Optional[Decimal] = None
-    availability: Optional[str] = None    # e.g. https://schema.org/InStock
-    item_condition: Optional[str] = None  # e.g. https://schema.org/NewCondition
+    availability: Optional[str] = None    # ex.: https://schema.org/InStock
+    item_condition: Optional[str] = None  # ex.: https://schema.org/NewCondition
     price_valid_until: Optional[date] = None
     image_urls: Optional[List[HttpUrl]] = None
 
@@ -50,7 +51,7 @@ class ProductMeta(BaseModel):
 class LocalBusinessMeta(BaseModel):
     business_name: Optional[str] = None
     phone: Optional[str] = None
-    price_range: Optional[str] = None     # "$$", "$$$"
+    price_range: Optional[str] = None     # "$", "$$", "$$$"
     street: Optional[str] = None
     city: Optional[str] = None
     region: Optional[str] = None
@@ -78,7 +79,7 @@ class PageMetaUpdate(BaseModel):
     # core (opcionais)
     seo_title: Optional[str] = None
     seo_description: Optional[str] = None
-    # canonical_url removido da entrada (é automático no backend)
+    # canonical_url não entra: é calculada no backend
 
     og_title: Optional[str] = None
     og_description: Optional[str] = None
@@ -93,11 +94,25 @@ class PageMetaUpdate(BaseModel):
 
 
 # ---------------- Saída ----------------
-class PageMetaOut(PageMetaBaseIn):
+class PageMetaOut(BaseModel):
     id: int
-    canonical_url: HttpUrl  # fornecida automaticamente pelo backend
 
-    # 🔹 blocos expostos no output
+    # Core retornado (tudo já resolvido pelo backend)
+    aplicacao_id: int
+    rota: str                # sempre preenchida (NOT NULL no banco)
+    lang_tag: str = "pt-BR"
+
+    seo_title: str
+    seo_description: str
+    canonical_url: HttpUrl   # fornecida automaticamente pelo backend
+
+    og_title: Optional[str] = None
+    og_description: Optional[str] = None
+    og_image_url: Optional[HttpUrl] = None
+    og_type: str = "website"
+    site_name: Optional[str] = None
+
+    # Blocos
     article: Optional[ArticleMeta] = None
     product: Optional[ProductMeta] = None
     localbusiness: Optional[LocalBusinessMeta] = None
