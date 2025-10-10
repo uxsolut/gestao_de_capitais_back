@@ -1,11 +1,11 @@
 # routers/page_meta.py
 # -*- coding: utf-8 -*-
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 import os
 import time
 import json
 from decimal import Decimal
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Body
 from sqlalchemy.orm import Session
@@ -57,6 +57,22 @@ def _ensure_leading_slash(path: str) -> str:
     return path if path.startswith("/") else f"/{path}"
 
 
+def _url_path_only(full: Optional[str]) -> str:
+    """Extrai apenas o path da URL (sem domínio, sem query/fragment)."""
+    if not full:
+        return "/"
+    try:
+        parsed = urlsplit(full)
+        path = parsed.path or "/"
+        return _ensure_leading_slash(path)
+    except Exception:
+        # fallback simples
+        if "://" in full:
+            full = full.split("://", 1)[1]
+            full = full[full.find("/") :] if "/" in full else ""
+        return _ensure_leading_slash(full or "/")
+
+
 def _pg_text_array(values: Optional[List[str]]) -> Optional[str]:
     """Converte lista Python -> literal Postgres text[]: {"a","b"}"""
     if not values:
@@ -67,72 +83,7 @@ def _pg_text_array(values: Optional[List[str]]) -> Optional[str]:
     return "{" + ",".join(f'"{esc(str(v))}"' for v in values) + "}"
 
 
-def _normalize_url_strip_qf(raw: Optional[str]) -> Optional[str]:
-    """Remove query/fragment, preserva esquema, host, path."""
-    if not raw:
-        return None
-    p = urlparse(raw)
-    cleaned = urlunparse((p.scheme, p.netloc, p.path or "/", "", "", ""))
-    return cleaned
-
-
-def _infer_rota_e_canonical(conn, aplicacao_id: int) -> Tuple[str, str]:
-    """
-    Infere:
-      - rota: a partir do path da URL completa da aplicação (tirando domínio)
-      - canonical_url: URL completa sem query/fragment
-    Observação: caso a coluna de URL completa não exista/esteja vazia,
-    faz fallback para dominio/slug.
-    """
-    # Tenta pegar uma coluna com a URL completa. Caso não exista, monta via dominio/slug.
-    app_row = conn.execute(text("""
-        SELECT
-            id,
-            dominio::text     AS dominio,
-            slug,
-            estado::text      AS estado,
-            id_empresa,
-            arquivo_zip,
-            -- tente adaptar o nome da coluna de URL completa aqui:
-            -- se a sua tabela chama 'url' ou 'url_publica', ajuste abaixo.
-            COALESCE(url::text, url_publica::text, NULL) AS url_completa
-        FROM global.aplicacoes
-        WHERE id = :id
-        LIMIT 1
-    """), {"id": aplicacao_id}).mappings().first()
-
-    if not app_row:
-        raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
-
-    dominio = (app_row.get("dominio") or "").strip()
-    slug    = (app_row.get("slug") or "").strip()
-    url_completa = (app_row.get("url_completa") or "").strip()
-
-    # Se já temos URL completa, usa ela
-    if url_completa:
-        cleaned = _normalize_url_strip_qf(url_completa)
-        p = urlparse(cleaned)
-        rota = p.path or "/"
-        return (_ensure_leading_slash(rota), cleaned)
-
-    # Fallback: montar a partir de dominio + slug
-    # dominio pode vir com ou sem esquema; tentar preservar se existir
-    if dominio:
-        dp = urlparse(dominio if "://" in dominio else f"https://{dominio}")
-        origin = f"{dp.scheme}://{dp.netloc}"
-    else:
-        # último fallback — sem domínio, retornar rota "/" e canonical "http://localhost/"
-        origin = "http://localhost"
-
-    rota = _ensure_leading_slash(f"/{slug}".replace("//", "/")) if slug else "/"
-    canonical = f"{origin}{rota}"
-    return (rota, canonical)
-
-
 def _upsert_article(db: Session, page_meta_id: int, data: Optional[ArticleMeta]):
-    """
-    ATENÇÃO: datas removidas (date_published/date_modified) conforme solicitado.
-    """
     if data is None:
         return
     if _is_empty_model(data):
@@ -371,30 +322,44 @@ def create_or_update_page_meta_and_deploy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # 0) Infere rota e canonical_url a partir do id da aplicação
+    # Vamos buscar a URL completa da aplicação (para canonical e rota)
     with engine.begin() as conn:
-        rota_inf, canonical_inf = _infer_rota_e_canonical(conn, body.aplicacao_id)
+        app_row = conn.execute(text("""
+            SELECT
+                id,
+                dominio::text AS dominio,
+                slug,
+                estado::text AS estado,
+                id_empresa,
+                arquivo_zip,
+                url_completa::text AS url_completa
+            FROM global.aplicacoes
+            WHERE id = :id
+            LIMIT 1
+        """), {"id": body.aplicacao_id}).mappings().first()
 
-    # 1) UPSERT page_meta pela chave composta (aplicacao_id, rota_inf, lang_tag)
+        if not app_row:
+            raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
+
+    canonical_from_app = app_row["url_completa"]
+    rota_from_app = _url_path_only(canonical_from_app)
+
+    # 1) UPSERT page_meta pela chave composta (usando rota derivada)
+    derived_rota = rota_from_app
     row = db.execute(text("""
         SELECT id FROM metadados.page_meta
          WHERE aplicacao_id = :ap
            AND rota = :ro
            AND lang_tag = :la
          LIMIT 1
-    """), {
-        "ap": body.aplicacao_id,
-        "ro": _ensure_leading_slash(rota_inf),
-        "la": body.lang_tag,
-    }).mappings().first()
+    """), {"ap": body.aplicacao_id, "ro": derived_rota, "la": body.lang_tag}).mappings().first()
 
     if row:
         item = db.get(PageMeta, row["id"])
+        item.rota = derived_rota
         item.seo_title = body.seo_title
         item.seo_description = body.seo_description
-        # canonical/rota automáticos (ignoramos o que vier no payload)
-        item.canonical_url = canonical_inf
-        item.rota = _ensure_leading_slash(rota_inf)
+        item.canonical_url = canonical_from_app  # automático
         item.og_title = body.og_title
         item.og_description = body.og_description
         item.og_image_url = str(body.og_image_url) if body.og_image_url else None
@@ -406,11 +371,11 @@ def create_or_update_page_meta_and_deploy(
     else:
         item = PageMeta(
             aplicacao_id=body.aplicacao_id,
-            rota=_ensure_leading_slash(rota_inf),
+            rota=derived_rota,
             lang_tag=body.lang_tag,
             seo_title=body.seo_title,
             seo_description=body.seo_description,
-            canonical_url=canonical_inf,   # automático
+            canonical_url=canonical_from_app,  # automático
             og_title=body.og_title,
             og_description=body.og_description,
             og_image_url=str(body.og_image_url) if body.og_image_url else None,
@@ -428,21 +393,13 @@ def create_or_update_page_meta_and_deploy(
     db.commit()
     db.refresh(item)
 
-    # 3) Preparação do ZIP + status
+    # 3) Preparação do ZIP + status/deploy (inalterado)
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
 
     with engine.begin() as conn:
-        app_row = conn.execute(text("""
-            SELECT id, dominio::text AS dominio, slug, estado::text AS estado, id_empresa, arquivo_zip
-              FROM global.aplicacoes
-             WHERE id = :id
-             LIMIT 1
-        """), {"id": body.aplicacao_id}).mappings().first()
-
-        if not app_row:
-            raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
+        # reusa app_row já lido acima para zip/estado/etc.
         zip_bytes: bytes = app_row["arquivo_zip"]
         if not zip_bytes:
             raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
@@ -473,9 +430,7 @@ def create_or_update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
-            # apaga antes de publicar (idempotente)
             GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
-            # publica
             GitHubPagesDeployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
@@ -488,7 +443,6 @@ def create_or_update_page_meta_and_deploy(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Metadados salvos, status atualizado, mas falhou o deploy: {e}")
 
-    # monta resposta com filhos
     ch = _fetch_children(db, [item.id])
     return PageMetaOut(**_to_out_dict(item, ch[item.id]))
 
@@ -505,27 +459,48 @@ def update_page_meta_and_deploy(
     if not item:
         raise HTTPException(status_code=404, detail="page_meta não encontrada.")
 
-    # Se trocar aplicacao_id/lang_tag (ou se quiser forçar re-inferência),
-    # re-infere rota e canonical sempre pela aplicação.
-    aplicacao_id_novo = body.aplicacao_id or item.aplicacao_id
+    # Sempre recalcula canonical e rota a partir da aplicação
     with engine.begin() as conn:
-        rota_inf, canonical_inf = _infer_rota_e_canonical(conn, aplicacao_id_novo)
+        app_row = conn.execute(text("""
+            SELECT
+                id, dominio::text AS dominio, slug, estado::text AS estado,
+                id_empresa, arquivo_zip, url_completa::text AS url_completa
+            FROM global.aplicacoes
+            WHERE id = :id
+            LIMIT 1
+        """), {"id": body.aplicacao_id or item.aplicacao_id}).mappings().first()
 
-    # Atualiza chaves/base
-    item.aplicacao_id = aplicacao_id_novo
-    item.rota         = _ensure_leading_slash(rota_inf)
-    item.lang_tag     = body.lang_tag or item.lang_tag
+        if not app_row:
+            raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
 
-    # Core mutáveis
+    canonical_from_app = app_row["url_completa"]
+    rota_from_app = _url_path_only(canonical_from_app)
+
+    # Pode mudar chaves
+    new_ap = body.aplicacao_id or item.aplicacao_id
+    new_ro = rota_from_app  # rota automática
+    new_la = body.lang_tag or item.lang_tag
+
+    # checa conflito
+    row = db.execute(text("""
+        SELECT id FROM metadados.page_meta
+         WHERE id <> :cur
+           AND aplicacao_id = :ap
+           AND rota = :ro
+           AND lang_tag = :la
+         LIMIT 1
+    """), {"cur": page_meta_id, "ap": new_ap, "ro": new_ro, "la": new_la}).mappings().first()
+    if row:
+        raise HTTPException(status_code=409, detail="Conflito com (aplicacao_id, rota, lang_tag).")
+
+    item.aplicacao_id, item.rota, item.lang_tag = new_ap, new_ro, new_la
+
     for field in ["seo_title", "seo_description", "og_title", "og_description", "og_type", "site_name"]:
         val = getattr(body, field, None)
         if val is not None:
             setattr(item, field, val)
 
-    # canonical_url sempre automático
-    item.canonical_url = canonical_inf
-
-    # og_image_url pode ser None/alterado
+    item.canonical_url = canonical_from_app
     if body.og_image_url is not None:
         item.og_image_url = str(body.og_image_url)
 
@@ -543,15 +518,6 @@ def update_page_meta_and_deploy(
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
 
     with engine.begin() as conn:
-        app_row = conn.execute(text("""
-            SELECT id, dominio::text AS dominio, slug, estado::text AS estado, id_empresa, arquivo_zip
-              FROM global.aplicacoes
-             WHERE id = :id
-             LIMIT 1
-        """), {"id": item.aplicacao_id}).mappings().first()
-
-        if not app_row:
-            raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
         zip_bytes: bytes = app_row["arquivo_zip"]
         if not zip_bytes:
             raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
@@ -611,7 +577,6 @@ def list_page_meta(
     lang_tag: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    # 1) base
     stmt = select(PageMeta)
     if aplicacao_id is not None:
         stmt = stmt.where(PageMeta.aplicacao_id == aplicacao_id)
@@ -627,7 +592,7 @@ def list_page_meta(
 
     ids = [b.id for b in bases]
 
-    # 2) filhos em lote
+    # filhos em lote
     art_rows = db.execute(text("""
         SELECT page_meta_id, type, headline, description, author_name, image_urls
           FROM metadados.page_meta_article
@@ -652,7 +617,6 @@ def list_page_meta(
     by_prod = {r["page_meta_id"]: r for r in prod_rows}
     by_biz  = {r["page_meta_id"]: r for r in biz_rows}
 
-    # 3) monta saída
     out = []
     for b in bases:
         item = {
