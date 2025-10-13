@@ -18,7 +18,7 @@ from database import engine
 from auth.dependencies import get_current_user
 from models.users import User
 
-from services.deploy_pages_service import GitHubPagesDeployer
+from services.deploy_adapter import get_deployer
 
 router = APIRouter(prefix="/aplicacoes", tags=["Aplicações"])
 
@@ -360,12 +360,12 @@ async def criar_aplicacao(
         if removidos_ids:
             old_path_remove = _deploy_slug(slug, estado)
             if old_path_remove is not None:
-                GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=old_path_remove or "")
+                get_deployer().dispatch_delete(domain=dominio, slug=old_path_remove or "")
 
         estado_efetivo = estado or "producao"
         slug_deploy = _deploy_slug(slug, estado_efetivo)
         if slug_deploy is not None:
-            GitHubPagesDeployer().dispatch(
+            get_deployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_url=zip_url,
@@ -503,7 +503,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
             new_slug_for_deploy = _deploy_slug(new_slug, new_estado)
 
             if old_path_active and old_slug_for_deploy and (old_slug_for_deploy != new_slug_for_deploy):
-                GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_slug_for_deploy or "")
+                get_deployer().dispatch_delete(domain=old_dominio, slug=old_slug_for_deploy or "")
 
             if not BASE_UPLOADS_URL:
                 raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
@@ -516,9 +516,9 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
             zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
 
             if removidos_ids and new_slug_for_deploy is not None:
-                GitHubPagesDeployer().dispatch_delete(domain=new_dominio, slug=new_slug_for_deploy or "")
+                get_deployer().dispatch_delete(domain=new_dominio, slug=new_slug_for_deploy or "")
 
-            GitHubPagesDeployer().dispatch(
+            get_deployer().dispatch(
                 domain=new_dominio,
                 slug=new_slug_for_deploy or "",
                 zip_url=zip_url,
@@ -531,7 +531,7 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
         elif (not new_path_active) and old_path_active and (new_estado == "desativado"):
             old_slug_for_deploy = _deploy_slug(old_slug, old_estado)
             if old_slug_for_deploy is not None:
-                GitHubPagesDeployer().dispatch_delete(domain=old_dominio, slug=old_slug_for_deploy or "")
+                get_deployer().dispatch_delete(domain=old_dominio, slug=old_slug_for_deploy or "")
     except HTTPException:
         raise
     except Exception as e:
@@ -591,7 +591,7 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
 
     try:
         if slug_for_delete is not None:
-            GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_for_delete or "")
+            get_deployer().dispatch_delete(domain=dominio, slug=slug_for_delete or "")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Falha ao disparar delete no GitHub: {e}")
 
@@ -784,7 +784,7 @@ def deploy_aplicacao_existente(
 
     try:
         if slug_deploy is not None:
-            GitHubPagesDeployer().dispatch(
+            get_deployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_url=zip_url,

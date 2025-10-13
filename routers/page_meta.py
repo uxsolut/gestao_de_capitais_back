@@ -23,7 +23,7 @@ from routers.aplicacoes import (
     _empresa_segment, _deploy_slug,
     BASE_UPLOADS_DIR, BASE_UPLOADS_URL, API_BASE_FOR_ACTIONS
 )
-from services.deploy_pages_service import GitHubPagesDeployer
+from services.deploy_adapter import get_deployer
 
 router = APIRouter(prefix="/page-meta", tags=["Page Meta"])
 
@@ -431,8 +431,8 @@ def create_or_update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
-            GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
-            GitHubPagesDeployer().dispatch(
+            get_deployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
+            get_deployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_url=zip_url,
@@ -548,8 +548,8 @@ def update_page_meta_and_deploy(
 
     try:
         if slug_deploy is not None:
-            GitHubPagesDeployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
-            GitHubPagesDeployer().dispatch(
+            get_deployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
+            get_deployer().dispatch(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_url=zip_url,
