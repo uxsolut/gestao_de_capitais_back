@@ -6,6 +6,7 @@ import re
 import logging
 import io
 from typing import Optional, List
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, status
 from fastapi.responses import StreamingResponse
@@ -555,8 +556,6 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
 
 
 # ======================= DELETE (por id) — ATUALIZADO p/ usar URL ======================
-from urllib.parse import urlsplit
-
 class DeleteBody(BaseModel):
     id: int
 
@@ -645,9 +644,17 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
         if domain not in DOMINIO_ENUM:
             raise HTTPException(status_code=400, detail=f"Domínio inválido: {domain}")
 
+    # 🔧 Separar estado/slug quando vierem embutidos no slug (ex.: "dev/empresa/slug")
+    estado_for_delete = ""
+    slug_path = slug_for_delete
+    m = re.match(r'^(beta|dev)/(.*)$', slug_for_delete)
+    if m:
+        estado_for_delete, slug_path = m.group(1), m.group(2)
+
     # 3) Disparar a deleção no Deployer (seu serviço local)
     try:
-        get_deployer().dispatch_delete(domain=domain, slug=slug_for_delete)
+        # passa estado explicitamente (aceita vazio para produção)
+        get_deployer().dispatch_delete(domain=domain, estado=estado_for_delete, slug=slug_path)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Falha ao disparar delete: {e}")
 
@@ -666,17 +673,16 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
         "ok": True,
         "id": body.id,
         "url": url_full,
-        "dominio": domain,            # domínio realmente usado no delete
-        "slug_removed": slug_for_delete,  # ex.: 'beta/pinacle/teste77'
+        "dominio": domain,                   # domínio realmente usado no delete
+        "estado_removed": estado_for_delete, # "", "beta" ou "dev"
+        "slug_removed": slug_path,           # ex.: 'pinacle/teste77'
         "apagado_no_banco": apagado_no_banco,
-        # infos de debug úteis
         "debug": {
             "dominio_db": dominio_db,
             "slug_db": slug_db,
             "estado_db": estado_db,
         },
     }
-
 
 # ========================================================================
 #        🔵 NOVO 1) POST /aplicacoes/registrar — SALVA O ZIP NO BANCO
