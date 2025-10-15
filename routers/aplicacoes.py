@@ -554,25 +554,70 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
     }
 
 
-# ======================= DELETE (por id) — INALTERADO ======================
+# ======================= DELETE (por id) — ATUALIZADO p/ usar URL ======================
+from urllib.parse import urlsplit
+
 class DeleteBody(BaseModel):
     id: int
 
+# aceita:
+#   "" (root-clean)
+#   "<slug>"
+#   "(beta|dev)/<slug>"
+#   "(beta|dev)/<empresa>/<slug>"
+_SLUG_SEG     = r"[a-z0-9-]{1,64}"
+_SLUG_PATTERN = re.compile(
+    rf"^$|^{_SLUG_SEG}$|^(beta|dev)/{_SLUG_SEG}$|^(beta|dev)/{_SLUG_SEG}/{_SLUG_SEG}$"
+)
+
+def _norm(s: Optional[str]) -> str:
+    return (s or "").strip().strip("/")
+
+def _domain_from_netloc(netloc: str) -> str:
+    # remove porta e 'www.'
+    host = (netloc or "").split(":")[0].lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+def _parse_deploy_url(url: str) -> tuple[str, str]:
+    """
+    Recebe a URL pública salva no registro (ex.: https://dominio/beta/empresa/slug)
+    -> retorna (domain, slug_for_delete)
+    """
+    try:
+        parts = urlsplit(url)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"URL inválida: {url!r}")
+
+    domain = _domain_from_netloc(parts.netloc)
+    if domain not in DOMINIO_ENUM:
+        raise HTTPException(status_code=400, detail=f"Domínio não permitido: {domain}")
+
+    slug_for_delete = _norm(parts.path)  # "", "beta/pinacle/teste77", "dev/site", etc.
+    if not _SLUG_PATTERN.match(slug_for_delete):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Slug derivado da URL inválido: {slug_for_delete!r}"
+        )
+    return domain, slug_for_delete
 
 @router.delete(
     "/delete",
     summary="aplicacoes delete (por id)",
-    description="Remove o deploy (se estiver no ar) e apaga o registro pelo id.",
+    description="Usa a URL completa do registro para remover o deploy e apaga o registro pelo id.",
 )
 def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current_user)):
+    # 1) Buscar dados incluindo a URL completa
     with engine.begin() as conn:
         row = conn.execute(
             text("""
                 SELECT id,
-                       dominio::text AS dominio,
+                       dominio::text   AS dominio,       -- p/ log/fallback
                        slug,
-                       estado::text  AS estado,
-                       id_empresa
+                       estado::text    AS estado,        -- p/ log/fallback
+                       id_empresa,
+                       url_completa::text AS url_completa
                 FROM global.aplicacoes
                 WHERE id = :id
                 LIMIT 1
@@ -583,18 +628,30 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
     if not row:
         raise HTTPException(status_code=404, detail="Registro não encontrado.")
 
-    dominio = row["dominio"]
-    slug = row["slug"]
-    estado = row["estado"]
+    dominio_db = row["dominio"]
+    slug_db    = row["slug"]
+    estado_db  = row["estado"]
+    url_full   = row["url_completa"]
 
-    slug_for_delete = _deploy_slug(slug, estado)
+    # 2) Extrair {domain, slug} preferencialmente da URL completa
+    if url_full:
+        domain, slug_for_delete = _parse_deploy_url(url_full)
+    else:
+        # Fallback legado: comportamento antigo (sem empresa)
+        slug_for_delete = _deploy_slug(slug_db, estado_db)
+        if slug_for_delete is None:
+            slug_for_delete = ""  # root-clean
+        domain = dominio_db
+        if domain not in DOMINIO_ENUM:
+            raise HTTPException(status_code=400, detail=f"Domínio inválido: {domain}")
 
+    # 3) Disparar a deleção no Deployer (seu serviço local)
     try:
-        if slug_for_delete is not None:
-            get_deployer().dispatch_delete(domain=dominio, slug=slug_for_delete or "")
+        get_deployer().dispatch_delete(domain=domain, slug=slug_for_delete)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Falha ao disparar delete no GitHub: {e}")
+        raise HTTPException(status_code=502, detail=f"Falha ao disparar delete: {e}")
 
+    # 4) Remover do banco
     try:
         with engine.begin() as conn:
             res = conn.execute(
@@ -603,16 +660,21 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
             )
             apagado_no_banco = (res.rowcount or 0) > 0
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"GitHub ok, mas erro ao excluir no banco: {e}")
+        raise HTTPException(status_code=502, detail=f"Delete ok, mas erro ao excluir no banco: {e}")
 
     return {
         "ok": True,
         "id": body.id,
-        "dominio": dominio,
-        "slug": slug,
-        "estado": estado,
-        "github_action": {"workflow": "delete-landing", "slug_removed": slug_for_delete},
+        "url": url_full,
+        "dominio": domain,            # domínio realmente usado no delete
+        "slug_removed": slug_for_delete,  # ex.: 'beta/pinacle/teste77'
         "apagado_no_banco": apagado_no_banco,
+        # infos de debug úteis
+        "debug": {
+            "dominio_db": dominio_db,
+            "slug_db": slug_db,
+            "estado_db": estado_db,
+        },
     }
 
 
