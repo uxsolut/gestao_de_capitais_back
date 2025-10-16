@@ -565,9 +565,10 @@ class DeleteBody(BaseModel):
 #   "<slug>"
 #   "(beta|dev)/<slug>"
 #   "(beta|dev)/<empresa>/<slug>"
+#   "<empresa>/<slug>"            # <- produção sem estado
 _SLUG_SEG     = r"[a-z0-9-]{1,64}"
 _SLUG_PATTERN = re.compile(
-    rf"^$|^{_SLUG_SEG}$|^(beta|dev)/{_SLUG_SEG}$|^(beta|dev)/{_SLUG_SEG}/{_SLUG_SEG}$"
+    rf"^$|^{_SLUG_SEG}$|^(beta|dev)/{_SLUG_SEG}$|^(beta|dev)/{_SLUG_SEG}/{_SLUG_SEG}$|^{_SLUG_SEG}/{_SLUG_SEG}$"
 )
 
 def _norm(s: Optional[str]) -> str:
@@ -594,7 +595,7 @@ def _parse_deploy_url(url: str) -> tuple[str, str]:
     if domain not in DOMINIO_ENUM:
         raise HTTPException(status_code=400, detail=f"Domínio não permitido: {domain}")
 
-    slug_for_delete = _norm(parts.path)  # "", "beta/pinacle/teste77", "dev/site", etc.
+    slug_for_delete = _norm(parts.path)  # "", "beta/pinacle/teste77", "dev/site", "pinacle/teste76", etc.
     if not _SLUG_PATTERN.match(slug_for_delete):
         raise HTTPException(
             status_code=400,
@@ -667,7 +668,7 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
         "id": body.id,
         "url": url_full,
         "dominio": domain,            # domínio realmente usado no delete
-        "slug_removed": slug_for_delete,  # ex.: 'beta/pinacle/teste77'
+        "slug_removed": slug_for_delete,  # ex.: 'beta/pinacle/teste77' ou 'pinacle/teste76'
         "apagado_no_banco": apagado_no_banco,
         # infos de debug úteis
         "debug": {
@@ -676,7 +677,6 @@ def aplicacoes_delete(body: DeleteBody, current_user: User = Depends(get_current
             "estado_db": estado_db,
         },
     }
-
 
 # ========================================================================
 #        🔵 NOVO 1) POST /aplicacoes/registrar — SALVA O ZIP NO BANCO
