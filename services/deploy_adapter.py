@@ -19,6 +19,8 @@ class RunnerDeployer:
             "Content-Type": "application/json",
         }
         self._headers_auth = {"Authorization": f"Bearer {self.token}"}
+        # >>> base do deleter (default local)
+        self.deleter_base = (os.getenv("DELETER_BASE") or "http://127.0.0.1:9103").rstrip("/")
 
     def _post_json(self, path: str, payload: dict):
         url = f"{self.base}{path}"
@@ -83,8 +85,12 @@ class RunnerDeployer:
         )
 
     def dispatch_delete(self, *, domain: str, slug: str) -> None:
-        # Runner ainda não tem endpoint de delete — no-op por enquanto
-        return
+        # >>> AGORA CHAMA O DELETER
+        url = f"{self.deleter_base}/deploy/delete-landing"
+        payload = {"domain": domain, "slug": slug or ""}
+        r = requests.post(url, json=payload, timeout=30)
+        if r.status_code >= 300:
+            raise RuntimeError(f"Deleter falhou ({r.status_code}): {r.text}")
 
 
 def get_deployer():
