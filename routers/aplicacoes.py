@@ -518,12 +518,12 @@ def editar_aplicacao(body: EditarAplicacaoBody, current_user: User = Depends(get
             if removidos_ids and new_slug_for_deploy is not None:
                 get_deployer().dispatch_delete(domain=new_dominio, slug=new_slug_for_deploy or "")
 
+            # >>>>>>>>>>>>>>> LINHA CORRIGIDA: usar empresa_seg <<<<<<<<<<<<<<<
             get_deployer().dispatch(
                 domain=new_dominio,
                 slug=new_slug_for_deploy or "",
                 zip_url=zip_url,
-                empresa=_empresa_segment  # só para indicar visualmente no diff; valor já usado acima
-                    (None, new_id_empresa),
+                empresa=empresa_seg,   # <- aqui é a correção
                 id_empresa=new_id_empresa,
                 aplicacao_id=body.id,
                 api_base=API_BASE_FOR_ACTIONS,
