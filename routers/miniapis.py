@@ -81,37 +81,18 @@ class MiniApiOut(BaseModel):
     precisa_logar: bool
     url_completa: Optional[str] = None
 
-# ---------- Parser tolerante (JSON/CSV/qualquer-coisa) ----------
-def _parse_list_field_loose(value: Optional[str]) -> Tuple[Optional[List[str]], Optional[str]]:
+# ---------- Helpers: salvar “como veio” ----------
+def _as_singleton_list_or_none(raw: Optional[str]) -> Optional[List[str]]:
     """
-    Tenta converter para lista de strings:
-      1) JSON array → ["a","b"]
-      2) JSON escalar → ["valor"]
-      3) CSV → "a,b,c"
-    Falhando tudo: retorna (None, "<nota para anexar em anotacoes>").
+    Se vier vazio/None -> None (vai para NULL).
+    Se vier qualquer texto -> [texto_exato] (um único elemento no array).
     """
-    if value is None:
-        return None, None
-    raw = value.strip()
-    if not raw:
-        return None, None
-
-    # tenta JSON primeiro
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            return [str(x) for x in parsed], None
-        return [str(parsed)], None
-    except Exception:
-        # tenta CSV
-        if "," in raw:
-            parts = [p.strip() for p in raw.split(",")]
-            parts = [p for p in parts if p]
-            if parts:
-                return parts, None
-
-    # não deu pra interpretar → não quebra: salva None e manda recado pra 'anotacoes'
-    return None, f"[INPUT_BRUTO_NAO_ESTRUTURADO: {raw}]"
+    if raw is None:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    return [s]
 
 def _insert_backend_row_initial(
     dominio: Optional[str],  # pode ser None para evitar conflito com enum
@@ -173,8 +154,8 @@ def criar_miniapi(
     id_empresa: Optional[int] = Form(None),
     precisa_logar: bool = Form(False),
     anotacoes: Optional[str] = Form(None),
-    dados_de_entrada: Optional[str] = Form(None, description="Qualquer texto, JSON, ou CSV"),
-    tipos_de_retorno: Optional[str] = Form(None, description="Qualquer texto, JSON, ou CSV"),
+    dados_de_entrada: Optional[str] = Form(None, description="Qualquer texto"),
+    tipos_de_retorno: Optional[str] = Form(None, description="Qualquer texto"),
     servidor: Optional[str] = Form(None),          # ENUM existente: "teste 1" | "teste 2" | ...
     tipo_api: str = Form(..., description="get|post|put|delete|cron_job|webhook|websocket"),
     # ==== opcional: pode forçar porta; senão aloca automática ====
@@ -191,14 +172,12 @@ def criar_miniapi(
     """
     _ensure_dirs()
 
-    # Interpretação TOLERANTE
-    dados_list, dados_raw_note = _parse_list_field_loose(dados_de_entrada)
-    tipos_list, tipos_raw_note = _parse_list_field_loose(tipos_de_retorno)
+    # >>> Sem interpretação: salva como veio (um único elemento no array) ou NULL
+    dados_list = _as_singleton_list_or_none(dados_de_entrada)
+    tipos_list = _as_singleton_list_or_none(tipos_de_retorno)
 
+    # anotacoes independentes
     anotacoes_final = (anotacoes or "").strip()
-    extras = " ".join([x for x in [dados_raw_note, tipos_raw_note] if x])
-    if extras:
-        anotacoes_final = (anotacoes_final + " " + extras).strip()
 
     # Lê arquivo
     rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))
