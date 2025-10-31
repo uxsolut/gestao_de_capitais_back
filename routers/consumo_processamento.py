@@ -88,21 +88,15 @@ def _ensure_tok_prefix(k: str) -> str:
         return k
     return k if k.startswith(f"{OPAQUE_NS}:") else f"{OPAQUE_NS}:{k}"
 
-# --- (ADICIONADO) Lua para dreno atômico preservando TTL e SEM apagar a chave ---
-# Semântica: GET valor + PTTL e SET {"ordens": []} preservando TTL — tudo atômico.
-REDIS_DRAIN_LUA = """
+# Lua para drenar de forma atômica: GET valor e DEL a chave (apaga o token do Redis).
+# Retorna o valor antigo (ou nil).
+REDIS_GETDEL_LUA = """
 local k = KEYS[1]
-local pttl = redis.call('PTTL', k)
 local v = redis.call('GET', k)
 if v then
-  local empty = '{"ordens":[]}'
-  if pttl and pttl > 0 then
-    redis.call('PSETEX', k, pttl, empty)
-  else
-    redis.call('SET', k, empty)
-  end
+  redis.call('DEL', k)
 end
-return {v, pttl}
+return v
 """
 
 
@@ -173,7 +167,7 @@ async def consumir_ordem(
     db: Session = Depends(get_db),
     _api_user = Depends(validate_api_user_bearer),  # força Bearer válido (role=api_user)
 ):
-    # --- (ADICIONADO) Exclusão mútua por conta (evita concorrência da MESMA conta) ---
+    # 🔒 0) Exclusão mútua por conta (evita corrida da MESMA conta)
     db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(body.id_conta)})
 
     # 1) Autentica usuário (email+senha)
@@ -198,42 +192,60 @@ async def consumir_ordem(
         raise HTTPException(status_code=403, detail="Conta não pertence ao usuário")
 
     chave_salva: Optional[str] = row[0]
+    # ⚠️ A partir de agora, sem token passa a ser 401 (pedido seu)
     if not chave_salva:
-        raise HTTPException(status_code=400, detail="Conta sem token")
+        raise HTTPException(status_code=401, detail="Conta sem token")
 
     redis_key = _ensure_tok_prefix(chave_salva)
 
-    # 3) Redis (DB=1): lê o payload JSON da chave tok:<token> e drena ATÔMICAMENTE
+    # 3) Redis (DB=1): dreno atômico (GET + DEL) => também "apaga" o token no Redis
     r = _redis_ordens()
     try:
-        # --- (ADICIONADO) Dreno atômico com Lua preservando TTL e sem mudar semântica ---
         try:
-            res = await r.eval(REDIS_DRAIN_LUA, 1, redis_key)
-            payload_str = res[0] if isinstance(res, list) and len(res) >= 1 else None
+            payload_str = await r.eval(REDIS_GETDEL_LUA, 1, redis_key)
         except Exception:
-            # Fallback mínimo: mantém comportamento antigo (get + set), se Lua indisponível
-            payload_str = await r.get(redis_key)
-            if payload_str:
-                ttl = await r.ttl(redis_key)
-                empty_payload = json.dumps({"ordens": []})
-                if ttl is not None and ttl > 0:
-                    await r.set(redis_key, empty_payload, ex=ttl)
-                else:
-                    await r.set(redis_key, empty_payload)
+            # Fallback para Redis sem EVAL (ou bloqueado): GETDEL (>= 6.2) ou GET+DEL
+            try:
+                payload_str = await r.getdel(redis_key)  # atomiza em versões novas
+            except Exception:
+                payload_str = await r.get(redis_key)
+                if payload_str:
+                    await r.delete(redis_key)
 
         if not payload_str:
+            # também vamos zerar o token no banco se existir, para garantir 401 nas próximas
+            db.execute(
+                text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
+                {"conta_id": body.id_conta},
+            )
+            db.commit()
             raise HTTPException(status_code=401, detail="Token ausente/expirado no Redis")
 
         try:
             payload = json.loads(payload_str)
         except Exception:
+            # zera token no banco mesmo assim
+            db.execute(
+                text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
+                {"conta_id": body.id_conta},
+            )
+            db.commit()
             raise HTTPException(status_code=400, detail="Payload inválido no Redis")
 
         ordens_list = payload.get("ordens") or []
         if not isinstance(ordens_list, list):
             ordens_list = []
 
-        # 4) Coleta ids para atualizar status
+        # 4) Se ficar vazio → 401 e token apagado (Redis já deletado; zera no banco)
+        if len(ordens_list) == 0:
+            db.execute(
+                text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
+                {"conta_id": body.id_conta},
+            )
+            db.commit()
+            raise HTTPException(status_code=401, detail="Sem ordens para consumir")
+
+        # 5) Coleta ids para atualizar status (mantido igual ao seu)
         ids: List[int] = []
         nums: List[str] = []
         for o in ordens_list:
@@ -244,7 +256,7 @@ async def consumir_ordem(
                 if num is not None:
                     nums.append(num)
 
-        # 5) Marca como 'Consumido' no Postgres (mantido exatamente como estava)
+        # 6) Marca como 'Consumido' no Postgres (igual ao seu arquivo)
         if ids:
             db.execute(
                 text("UPDATE ordens SET status='Consumido'::ordem_status WHERE id = ANY(:ids)"),
@@ -255,18 +267,23 @@ async def consumir_ordem(
                 text("UPDATE ordens SET status='Consumido'::ordem_status WHERE numero_unico = ANY(:nums)"),
                 {"nums": nums},
             )
-        if ids or nums:
-            db.commit()
 
-        # (❗) OBS: não precisamos “zerar” de novo aqui — o Lua já setou {"ordens":[]}
-        # mantendo o TTL. O fallback acima também já fez o set vazio. Nada mais muda.
+        # 7) **Apaga o token no banco** (para o próximo pull já retornar 401)
+        db.execute(
+            text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
+            {"conta_id": body.id_conta},
+        )
+
+        # Commit das alterações (status + null no token)
+        db.commit()
+
     finally:
         try:
             await r.aclose()
         except Exception:
             pass
 
-    # 7) Resposta
+    # 8) Resposta (primeiro consumo retorna as ordens e já invalida o token)
     return ConsumirResp(
         status="success",
         conta=body.id_conta,
