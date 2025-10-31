@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import uuid
 from typing import Optional, List, Any, Dict, Tuple
 from urllib.parse import urlparse, urlunparse
 
@@ -41,6 +42,9 @@ OPAQUE_NS = (os.getenv("OPAQUE_TOKEN_NAMESPACE") or "tok").strip()
 # nome REAL da coluna do token em public.contas
 ACCOUNT_TOKEN_COLUMN = "chave_do_token"
 
+# lease/lock TTL em segundos (tempo máximo de processamento de um lote)
+LOCK_TTL_SECONDS = int(os.getenv("CONSUMO_LOCK_TTL", "30"))
+
 
 # ======================================================================
 # Schemas
@@ -77,27 +81,28 @@ def _bump_db(url: str, db_index: int) -> str:
 
 def _redis_global() -> aioredis.Redis:
     """DB 0 – tokens opacos de 'api_user' (Bearer do Swagger)."""
-    return aioredis.from_url(_bump_db(REDIS_URL, 0), encoding="utf-8", decode_responses=True)
+    return aioredis.from_url(
+        _bump_db(REDIS_URL, 0),
+        encoding="utf-8",
+        decode_responses=True,
+        socket_timeout=2.0,
+        socket_connect_timeout=2.0,
+    )
 
 def _redis_ordens() -> aioredis.Redis:
     """DB 1 – onde o writer grava as ordens por conta em tok:<token>."""
-    return aioredis.from_url(_bump_db(REDIS_URL, 1), encoding="utf-8", decode_responses=True)
+    return aioredis.from_url(
+        _bump_db(REDIS_URL, 1),
+        encoding="utf-8",
+        decode_responses=True,
+        socket_timeout=2.0,
+        socket_connect_timeout=2.0,
+    )
 
 def _ensure_tok_prefix(k: str) -> str:
     if not k:
         return k
     return k if k.startswith(f"{OPAQUE_NS}:") else f"{OPAQUE_NS}:{k}"
-
-# Lua para drenar de forma atômica: GET valor e DEL a chave (apaga o token do Redis).
-# Retorna o valor antigo (ou nil).
-REDIS_GETDEL_LUA = """
-local k = KEYS[1]
-local v = redis.call('GET', k)
-if v then
-  redis.call('DEL', k)
-end
-return v
-"""
 
 
 # ======================================================================
@@ -158,7 +163,7 @@ def _collect_ids_from_ordem(o: Dict[str, Any]) -> Tuple[Optional[int], Optional[
 
 
 # ======================================================================
-# Endpoint principal
+# Endpoint principal (lease + commit-first)
 # ======================================================================
 
 @router.post("/consumir-ordem", response_model=ConsumirResp)
@@ -167,7 +172,7 @@ async def consumir_ordem(
     db: Session = Depends(get_db),
     _api_user = Depends(validate_api_user_bearer),  # força Bearer válido (role=api_user)
 ):
-    # 🔒 0) Exclusão mútua por conta (evita corrida da MESMA conta)
+    # 🔒 0) Exclusão mútua por conta no Postgres (serializa concorrência interna)
     db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(body.id_conta)})
 
     # 1) Autentica usuário (email+senha)
@@ -192,90 +197,118 @@ async def consumir_ordem(
         raise HTTPException(status_code=403, detail="Conta não pertence ao usuário")
 
     chave_salva: Optional[str] = row[0]
-    # ⚠️ A partir de agora, sem token passa a ser 401 (pedido seu)
     if not chave_salva:
+        # ⚠️ agora sem token é 401 (pedido seu)
         raise HTTPException(status_code=401, detail="Conta sem token")
 
     redis_key = _ensure_tok_prefix(chave_salva)
+    lock_key = f"{redis_key}:lock"
+    lock_val = str(uuid.uuid4())
 
-    # 3) Redis (DB=1): dreno atômico (GET + DEL) => também "apaga" o token no Redis
     r = _redis_ordens()
     try:
+        # 3) LEASE/LOCK no Redis: garante um consumidor por vez
+        got_lock = await r.set(lock_key, lock_val, nx=True, ex=LOCK_TTL_SECONDS)
+        if not got_lock:
+            raise HTTPException(status_code=429, detail="Outro consumidor está processando este lote")
+
         try:
-            payload_str = await r.eval(REDIS_GETDEL_LUA, 1, redis_key)
-        except Exception:
-            # Fallback para Redis sem EVAL (ou bloqueado): GETDEL (>= 6.2) ou GET+DEL
+            # 4) Lê o payload SEM apagar (para não perder em caso de falha de commit)
+            payload_str = await r.get(redis_key)
+            if not payload_str:
+                # zera token no banco para retornar 401 nos próximos pulls
+                db.execute(
+                    text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
+                    {"conta_id": body.id_conta},
+                )
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                raise HTTPException(status_code=401, detail="Token ausente/expirado no Redis")
+
             try:
-                payload_str = await r.getdel(redis_key)  # atomiza em versões novas
+                payload = json.loads(payload_str)
             except Exception:
-                payload_str = await r.get(redis_key)
-                if payload_str:
-                    await r.delete(redis_key)
+                db.execute(
+                    text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
+                    {"conta_id": body.id_conta},
+                )
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                raise HTTPException(status_code=400, detail="Payload inválido no Redis")
 
-        if not payload_str:
-            # também vamos zerar o token no banco se existir, para garantir 401 nas próximas
-            db.execute(
-                text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
-                {"conta_id": body.id_conta},
-            )
-            db.commit()
-            raise HTTPException(status_code=401, detail="Token ausente/expirado no Redis")
+            ordens_list = payload.get("ordens") or []
+            if not isinstance(ordens_list, list):
+                ordens_list = []
 
-        try:
-            payload = json.loads(payload_str)
-        except Exception:
-            # zera token no banco mesmo assim
-            db.execute(
-                text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
-                {"conta_id": body.id_conta},
-            )
-            db.commit()
-            raise HTTPException(status_code=400, detail="Payload inválido no Redis")
+            # 5) Se vazio → 401 e limpa token no banco (lock expira/libera)
+            if len(ordens_list) == 0:
+                db.execute(
+                    text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
+                    {"conta_id": body.id_conta},
+                )
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                raise HTTPException(status_code=401, detail="Sem ordens para consumir")
 
-        ordens_list = payload.get("ordens") or []
-        if not isinstance(ordens_list, list):
-            ordens_list = []
+            # 6) Atualiza Postgres (idempotente do seu jeito) e COMMIT
+            ids: List[int] = []
+            nums: List[str] = []
+            for o in ordens_list:
+                if isinstance(o, dict):
+                    oid, num = _collect_ids_from_ordem(o)
+                    if oid is not None:
+                        ids.append(oid)
+                    if num is not None:
+                        nums.append(num)
 
-        # 4) Se ficar vazio → 401 e token apagado (Redis já deletado; zera no banco)
-        if len(ordens_list) == 0:
-            db.execute(
-                text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
-                {"conta_id": body.id_conta},
-            )
-            db.commit()
-            raise HTTPException(status_code=401, detail="Sem ordens para consumir")
+            if ids:
+                db.execute(
+                    text("UPDATE ordens SET status='Consumido'::ordem_status WHERE id = ANY(:ids)"),
+                    {"ids": ids},
+                )
+            if nums:
+                db.execute(
+                    text("UPDATE ordens SET status='Consumido'::ordem_status WHERE numero_unico = ANY(:nums)"),
+                    {"nums": nums},
+                )
 
-        # 5) Coleta ids para atualizar status (mantido igual ao seu)
-        ids: List[int] = []
-        nums: List[str] = []
-        for o in ordens_list:
-            if isinstance(o, dict):
-                oid, num = _collect_ids_from_ordem(o)
-                if oid is not None:
-                    ids.append(oid)
-                if num is not None:
-                    nums.append(num)
+            # Commit das alterações de status
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                # ⚠️ NÃO apaga o Redis: lote permanece para retry seguro
+                raise
 
-        # 6) Marca como 'Consumido' no Postgres (igual ao seu arquivo)
-        if ids:
-            db.execute(
-                text("UPDATE ordens SET status='Consumido'::ordem_status WHERE id = ANY(:ids)"),
-                {"ids": ids},
-            )
-        if nums:
-            db.execute(
-                text("UPDATE ordens SET status='Consumido'::ordem_status WHERE numero_unico = ANY(:nums)"),
-                {"nums": nums},
-            )
+            # 7) Commit OK → apaga o lote no Redis e zera token no banco
+            try:
+                await r.delete(redis_key)
+            finally:
+                # mesmo que a deleção falhe, zeramos o token no banco
+                db.execute(
+                    text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
+                    {"conta_id": body.id_conta},
+                )
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
 
-        # 7) **Apaga o token no banco** (para o próximo pull já retornar 401)
-        db.execute(
-            text(f"UPDATE contas SET {ACCOUNT_TOKEN_COLUMN} = NULL WHERE id = :conta_id"),
-            {"conta_id": body.id_conta},
-        )
-
-        # Commit das alterações (status + null no token)
-        db.commit()
+        finally:
+            # 8) Libera o lock somente se ainda for nosso (evita apagar lock de outro)
+            try:
+                cur = await r.get(lock_key)
+                if cur == lock_val:
+                    await r.delete(lock_key)
+            except Exception:
+                # se falhar, ele expira pelo TTL
+                pass
 
     finally:
         try:
@@ -283,7 +316,7 @@ async def consumir_ordem(
         except Exception:
             pass
 
-    # 8) Resposta (primeiro consumo retorna as ordens e já invalida o token)
+    # 9) Resposta (primeiro consumo retorna as ordens e já invalida o token)
     return ConsumirResp(
         status="success",
         conta=body.id_conta,
