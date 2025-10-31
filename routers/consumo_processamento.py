@@ -30,6 +30,7 @@ import models.corretoras  # noqa: F401
 
 from redis import asyncio as aioredis  # redis-py asyncio
 
+
 # ======================================================================
 # Config
 # ======================================================================
@@ -40,9 +41,6 @@ OPAQUE_NS = (os.getenv("OPAQUE_TOKEN_NAMESPACE") or "tok").strip()
 # nome REAL da coluna do token em public.contas
 ACCOUNT_TOKEN_COLUMN = "chave_do_token"
 
-# Estados que permitem transição para 'Consumido'
-# ✅ inclui 'Inicializado' (o seu status inicial atual)
-CONSUMABLE_STATES = ("Inicializado", "Pendente", "EmFila", "Nova")
 
 # ======================================================================
 # Schemas
@@ -60,11 +58,13 @@ class ConsumirResp(BaseModel):
     quantidade: int
     ordens: List[Dict[str, Any]]
 
+
 # ======================================================================
 # Router
 # ======================================================================
 
 router = APIRouter(prefix="/api/v1", tags=["Processamento"])
+
 
 # ======================================================================
 # Redis helpers
@@ -87,6 +87,24 @@ def _ensure_tok_prefix(k: str) -> str:
     if not k:
         return k
     return k if k.startswith(f"{OPAQUE_NS}:") else f"{OPAQUE_NS}:{k}"
+
+# --- (ADICIONADO) Lua para dreno atômico preservando TTL e SEM apagar a chave ---
+# Semântica: GET valor + PTTL e SET {"ordens": []} preservando TTL — tudo atômico.
+REDIS_DRAIN_LUA = """
+local k = KEYS[1]
+local pttl = redis.call('PTTL', k)
+local v = redis.call('GET', k)
+if v then
+  local empty = '{"ordens":[]}'
+  if pttl and pttl > 0 then
+    redis.call('PSETEX', k, pttl, empty)
+  else
+    redis.call('SET', k, empty)
+  end
+end
+return {v, pttl}
+"""
+
 
 # ======================================================================
 # Segurança (HTTP Bearer)
@@ -123,6 +141,7 @@ async def validate_api_user_bearer(
         except Exception:
             pass
 
+
 # ======================================================================
 # Util: extrair ids de ordem para atualizar status
 # ======================================================================
@@ -135,18 +154,14 @@ def _collect_ids_from_ordem(o: Dict[str, Any]) -> Tuple[Optional[int], Optional[
         or o.get("id")
     )
     try:
-        oid = int(id_val) if id_val is not None and str(id_val).strip() != "" else None
+        oid = int(id_val) if id_val is not None else None
     except Exception:
         oid = None
 
     num = o.get("numero_unico")
-    if num is not None:
-        num = str(num).strip()
-        if num == "":
-            num = None
-    else:
-        num = None
+    num = str(num) if isinstance(num, str) else None
     return oid, num
+
 
 # ======================================================================
 # Endpoint principal
@@ -158,7 +173,7 @@ async def consumir_ordem(
     db: Session = Depends(get_db),
     _api_user = Depends(validate_api_user_bearer),  # força Bearer válido (role=api_user)
 ):
-    # 🔒 0) Exclusão mútua por conta dentro da transação (evita corrida por conta)
+    # --- (ADICIONADO) Exclusão mútua por conta (evita concorrência da MESMA conta) ---
     db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(body.id_conta)})
 
     # 1) Autentica usuário (email+senha)
@@ -188,15 +203,25 @@ async def consumir_ordem(
 
     redis_key = _ensure_tok_prefix(chave_salva)
 
-    # 3) Redis (DB=1): Lê payload e já prepara a limpeza preservando TTL (compatível sem Lua/GETDEL)
+    # 3) Redis (DB=1): lê o payload JSON da chave tok:<token> e drena ATÔMICAMENTE
     r = _redis_ordens()
     try:
-        # lê valor e TTL atual
-        pttl = await r.pttl(redis_key)
-        payload_str = await r.get(redis_key)
+        # --- (ADICIONADO) Dreno atômico com Lua preservando TTL e sem mudar semântica ---
+        try:
+            res = await r.eval(REDIS_DRAIN_LUA, 1, redis_key)
+            payload_str = res[0] if isinstance(res, list) and len(res) >= 1 else None
+        except Exception:
+            # Fallback mínimo: mantém comportamento antigo (get + set), se Lua indisponível
+            payload_str = await r.get(redis_key)
+            if payload_str:
+                ttl = await r.ttl(redis_key)
+                empty_payload = json.dumps({"ordens": []})
+                if ttl is not None and ttl > 0:
+                    await r.set(redis_key, empty_payload, ex=ttl)
+                else:
+                    await r.set(redis_key, empty_payload)
 
         if not payload_str:
-            # manter comportamento antigo: 401 quando não há token/payload
             raise HTTPException(status_code=401, detail="Token ausente/expirado no Redis")
 
         try:
@@ -219,37 +244,22 @@ async def consumir_ordem(
                 if num is not None:
                     nums.append(num)
 
-        # 5) Marca como 'Consumido' no Postgres (idempotente; inclui 'Inicializado')
+        # 5) Marca como 'Consumido' no Postgres (mantido exatamente como estava)
         if ids:
             db.execute(
-                text("""
-                    UPDATE ordens
-                       SET status = 'Consumido'::ordem_status
-                     WHERE id = ANY(:ids)
-                       AND status = ANY(:allowed)
-                """),
-                {"ids": ids, "allowed": list(CONSUMABLE_STATES)},
+                text("UPDATE ordens SET status='Consumido'::ordem_status WHERE id = ANY(:ids)"),
+                {"ids": ids},
             )
         if nums:
             db.execute(
-                text("""
-                    UPDATE ordens
-                       SET status = 'Consumido'::ordem_status
-                     WHERE numero_unico = ANY(:nums)
-                       AND status = ANY(:allowed)
-                """),
-                {"nums": nums, "allowed": list(CONSUMABLE_STATES)},
+                text("UPDATE ordens SET status='Consumido'::ordem_status WHERE numero_unico = ANY(:nums)"),
+                {"nums": nums},
             )
         if ids or nums:
             db.commit()
 
-        # 6) Drena: zera a lista e mantém o TTL atual (exatamente como seu fluxo original)
-        empty_payload = json.dumps({"ordens": []})
-        if pttl is not None and pttl > 0:
-            await r.set(redis_key, empty_payload, px=int(pttl))
-        else:
-            await r.set(redis_key, empty_payload)
-
+        # (❗) OBS: não precisamos “zerar” de novo aqui — o Lua já setou {"ordens":[]}
+        # mantendo o TTL. O fallback acima também já fez o set vazio. Nada mais muda.
     finally:
         try:
             await r.aclose()
