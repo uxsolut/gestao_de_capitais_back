@@ -41,8 +41,8 @@ OPAQUE_NS = (os.getenv("OPAQUE_TOKEN_NAMESPACE") or "tok").strip()
 ACCOUNT_TOKEN_COLUMN = "chave_do_token"
 
 # Estados que permitem transição para 'Consumido'
-# ⚠️ Ajuste conforme seu ENUM ordem_status no Postgres.
-CONSUMABLE_STATES = ("Pendente", "EmFila", "Nova")
+# ✅ inclui 'Inicializado' (o seu status inicial atual)
+CONSUMABLE_STATES = ("Inicializado", "Pendente", "EmFila", "Nova")
 
 # ======================================================================
 # Schemas
@@ -59,9 +59,6 @@ class ConsumirResp(BaseModel):
     conta: int
     quantidade: int
     ordens: List[Dict[str, Any]]
-    # opcionalmente, você pode expor quantas realmente foram marcadas como Consumido:
-    # atualizadas: int = 0
-
 
 # ======================================================================
 # Router
@@ -90,21 +87,6 @@ def _ensure_tok_prefix(k: str) -> str:
     if not k:
         return k
     return k if k.startswith(f"{OPAQUE_NS}:") else f"{OPAQUE_NS}:{k}"
-
-# Script Lua para drenar atomically: retorna {valor, pttl}
-# - Lê o PTTL
-# - Lê o GET
-# - DEL na chave
-# Tudo numa operação atômica.
-REDIS_DRAIN_LUA = """
-local k = KEYS[1]
-local ttl = redis.call('PTTL', k)
-local v = redis.call('GET', k)
-if v then
-  redis.call('DEL', k)
-end
-return {v, ttl}
-"""
 
 # ======================================================================
 # Segurança (HTTP Bearer)
@@ -176,8 +158,7 @@ async def consumir_ordem(
     db: Session = Depends(get_db),
     _api_user = Depends(validate_api_user_bearer),  # força Bearer válido (role=api_user)
 ):
-    # 🔒 0) Exclusão mútua por conta dentro da transação
-    #     Garante que duas leituras para a MESMA conta não rodem em paralelo.
+    # 🔒 0) Exclusão mútua por conta dentro da transação (evita corrida por conta)
     db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(body.id_conta)})
 
     # 1) Autentica usuário (email+senha)
@@ -207,30 +188,16 @@ async def consumir_ordem(
 
     redis_key = _ensure_tok_prefix(chave_salva)
 
-    # 3) Redis (DB=1): DRENO ATÔMICO do payload + TTL via Lua
+    # 3) Redis (DB=1): Lê payload e já prepara a limpeza preservando TTL (compatível sem Lua/GETDEL)
     r = _redis_ordens()
     try:
-        # Tenta via script Lua (atômico)
-        try:
-            res = await r.eval(REDIS_DRAIN_LUA, 1, redis_key)
-            payload_str, pttl = (res[0], res[1] if isinstance(res, list) and len(res) == 2 else None)
-        except Exception:
-            # Fallback simples (menos perfeito): pttl + GETDEL (Redis >= 6.2)
-            try:
-                pttl = await r.pttl(redis_key)
-            except Exception:
-                pttl = None
-            try:
-                payload_str = await r.getdel(redis_key)  # atomiza get+del
-            except Exception:
-                # Fallback final: GET + DEL (não totalmente atômico, mas último recurso)
-                payload_str = await r.get(redis_key)
-                if payload_str is not None:
-                    await r.delete(redis_key)
+        # lê valor e TTL atual
+        pttl = await r.pttl(redis_key)
+        payload_str = await r.get(redis_key)
 
         if not payload_str:
-            # Nada a consumir
-            raise HTTPException(status_code=204, detail="Sem ordens para consumir")
+            # manter comportamento antigo: 401 quando não há token/payload
+            raise HTTPException(status_code=401, detail="Token ausente/expirado no Redis")
 
         try:
             payload = json.loads(payload_str)
@@ -252,48 +219,36 @@ async def consumir_ordem(
                 if num is not None:
                     nums.append(num)
 
-        # 5) Marca como 'Consumido' no Postgres com guarda de estado + RETURNING
-        total_atualizadas = 0
+        # 5) Marca como 'Consumido' no Postgres (idempotente; inclui 'Inicializado')
         if ids:
-            updated_ids = db.execute(
-                text(f"""
+            db.execute(
+                text("""
                     UPDATE ordens
                        SET status = 'Consumido'::ordem_status
                      WHERE id = ANY(:ids)
                        AND status = ANY(:allowed)
-                 RETURNING id
                 """),
                 {"ids": ids, "allowed": list(CONSUMABLE_STATES)},
-            ).fetchall()
-            total_atualizadas += len(updated_ids)
-
+            )
         if nums:
-            updated_nums = db.execute(
-                text(f"""
+            db.execute(
+                text("""
                     UPDATE ordens
                        SET status = 'Consumido'::ordem_status
                      WHERE numero_unico = ANY(:nums)
                        AND status = ANY(:allowed)
-                 RETURNING id
                 """),
                 {"nums": nums, "allowed": list(CONSUMABLE_STATES)},
-            ).fetchall()
-            total_atualizadas += len(updated_nums)
-
+            )
         if ids or nums:
             db.commit()
 
-        # 6) Recria a chave vazia com o MESMO TTL (se ainda houver), preservando a sua semântica
-        try:
-            empty_payload = json.dumps({"ordens": []})
-            if pttl is not None and pttl > 0:
-                # pttl é em milissegundos
-                await r.set(redis_key, empty_payload, px=int(pttl))
-            else:
-                await r.set(redis_key, empty_payload)
-        except Exception:
-            # não é crítico se falhar: as ordens já foram drenadas
-            pass
+        # 6) Drena: zera a lista e mantém o TTL atual (exatamente como seu fluxo original)
+        empty_payload = json.dumps({"ordens": []})
+        if pttl is not None and pttl > 0:
+            await r.set(redis_key, empty_payload, px=int(pttl))
+        else:
+            await r.set(redis_key, empty_payload)
 
     finally:
         try:
@@ -307,5 +262,4 @@ async def consumir_ordem(
         conta=body.id_conta,
         quantidade=len(ordens_list),
         ordens=ordens_list,
-        # atualizadas=total_atualizadas,  # habilite se quiser
     )
