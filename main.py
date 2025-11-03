@@ -30,7 +30,6 @@ from routers import (
     robos,
     users,
     robos_do_user,
-    ordens,
     corretoras as r_corretoras,
     dashboard,
     cliente_contas,
@@ -140,7 +139,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(consumo_processamento.router, tags=["Consumo Processamento"])
 
     elif mode == "public":
-        app.include_router(ordens.router)
         app.include_router(robos.router)
         app.include_router(users.router)
         app.include_router(robos_do_user.router)
@@ -159,7 +157,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
 
     elif mode == "all":
-        app.include_router(ordens.router)
         app.include_router(robos.router)
         app.include_router(users.router)
         app.include_router(robos_do_user.router)
