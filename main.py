@@ -139,8 +139,8 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(consumo_processamento.router, tags=["Consumo Processamento"])
 
     elif mode == "public":
-        app.include_router(robos.router)
         app.include_router(users.router)
+        app.include_router(robos.router)
         app.include_router(robos_do_user.router)
         app.include_router(cliente_carteiras.router)
         app.include_router(r_corretoras.router)
@@ -157,8 +157,8 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
 
     elif mode == "all":
-        app.include_router(robos.router)
         app.include_router(users.router)
+        app.include_router(robos.router)
         app.include_router(robos_do_user.router)
         app.include_router(cliente_carteiras.router)
         app.include_router(r_corretoras.router)
