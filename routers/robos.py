@@ -109,31 +109,6 @@ async def criar_robo_multipart(
     cache_service.clear_pattern("robos:*")
     return _to_schema(novo)
 
-# ---------- POST LEGADO: JSON (sem arquivo) ----------
-@router.post(
-    "/json",
-    response_model=RoboSchema,
-    status_code=status.HTTP_201_CREATED,
-    summary="Criar Robô (LEGADO) — JSON sem arquivo)",
-)
-def criar_robo_json(
-    payload: RobosCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    novo = Robo(
-        nome=payload.nome,
-        performance=payload.performance,
-        id_ativo=getattr(payload, "id_ativo", None),
-        arquivo_robo=None,
-    )
-    db.add(novo)
-    db.commit()
-    db.refresh(novo)
-
-    cache_service.clear_pattern("robos:*")
-    return _to_schema(novo)
-
 # ---------- PUT: Atualizar robô (MULTIPART, igual ao POST) ----------
 @router.put(
     "/{id}",
