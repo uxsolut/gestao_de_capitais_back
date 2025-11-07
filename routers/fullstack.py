@@ -75,6 +75,43 @@ def _criar_aplicacao_model(
     )
 
 
+def _desativar_anteriores_mesmo_slug_estado(
+    db: Session,
+    dominio: str,
+    slug: Optional[str],
+    estado: Optional[str],
+) -> None:
+    """
+    Se já existir aplicação com mesmo (dominio, estado, slug),
+    marca todas como 'desativado' antes de criar a nova.
+
+    Isso evita o erro de UNIQUE em (dominio, estado, slug) e
+    garante que sempre haja só uma ativa por combinação.
+    """
+    # Se não mandou estado ou slug, esse índice único não entra em jogo.
+    if not slug or not estado:
+        return
+
+    antigos = (
+        db.query(Aplicacao)
+        .filter(
+            Aplicacao.dominio == dominio,
+            Aplicacao.slug == slug,
+            Aplicacao.estado == estado,
+        )
+        .all()
+    )
+
+    if not antigos:
+        return
+
+    for app in antigos:
+        app.estado = "desativado"
+
+    # Garante que o UPDATE seja mandado pro banco antes do INSERT da nova
+    db.flush()
+
+
 # ============================================================================
 # 1) REGISTRAR FULLSTACK (SEM DEPLOY)
 # ============================================================================
@@ -137,6 +174,9 @@ async def registrar_aplicacao_fullstack(
     zip_bytes = await arquivo_zip.read()
     if not zip_bytes:
         raise HTTPException(status_code=400, detail="Arquivo ZIP vazio.")
+
+    # Se já existe (dominio, estado, slug), marca os antigos como desativado
+    _desativar_anteriores_mesmo_slug_estado(db, dominio, slug, estado)
 
     app_row = _criar_aplicacao_model(
         dominio=dominio,
@@ -220,6 +260,10 @@ async def criar_aplicacao_fullstack(
     zip_bytes = await arquivo_zip.read()
     if not zip_bytes:
         raise HTTPException(status_code=400, detail="Arquivo ZIP vazio.")
+
+    # Mesmo comportamento: se já existir (dominio, estado, slug),
+    # desativa as anteriores antes de criar a nova.
+    _desativar_anteriores_mesmo_slug_estado(db, dominio, slug, estado)
 
     # 3) Criar registro na tabela global.aplicacoes
     app_row = _criar_aplicacao_model(
