@@ -63,7 +63,12 @@ def _empresa_segment_sa(db: Session, id_empresa: Optional[int]) -> Optional[str]
     return s or None
 
 
-def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str], empresa_seg: Optional[str]) -> str:
+def _canonical_url(
+    dominio: str,
+    estado: Optional[str],
+    slug: Optional[str],
+    empresa_seg: Optional[str],
+) -> str:
     """
     Mesmo cálculo de URL do /aplicacoes/criar:
     https://dominio/[estado se != producao]/[empresa_seg]/[slug]
@@ -77,6 +82,43 @@ def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str], emp
     if slug:
         parts.append(slug.strip("/"))
     return base + ("/" + "/".join(parts) if parts else "/")
+
+
+def _build_api_base_path(
+    *,
+    estado: Optional[str],
+    slug: Optional[str],
+    empresa_seg: Optional[str],
+) -> str:
+    """
+    Caminho base do backend, alinhado com a URL do front, mas com "/api" no fim.
+
+    Exemplos:
+        estado=None, empresa=None, slug='htt'
+            -> '/htt/api/'
+        estado='beta', empresa=None, slug='htt'
+            -> '/beta/htt/api/'
+        estado='beta', empresa='pinacle', slug='rr'
+            -> '/beta/pinacle/rr/api/'
+    """
+    parts = []
+
+    # estado só entra se não for produção
+    if estado and not _is_producao(estado):
+        parts.append(estado.strip("/"))
+
+    if empresa_seg:
+        parts.append(empresa_seg.strip("/"))
+
+    if slug:
+        parts.append(slug.strip("/"))
+
+    if not parts:
+        base = "/"
+    else:
+        base = "/" + "/".join(parts)
+
+    return base.rstrip("/") + "/api/"
 
 
 def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
@@ -330,7 +372,7 @@ async def criar_aplicacao_fullstack(
     - Chama RunnerDeployer.dispatch_fullstack(), que:
         * separa o ZIP em frontend.zip e backend.zip
         * frontend → deploy_landing.sh (com metadados, igual deploy de front normal)
-        * backend  → publicado em <url_do_front>/_api/
+        * backend  → publicado em <url_do_front>/api
     """
     zip_bytes = await arquivo_zip.read()
     if not zip_bytes:
@@ -338,7 +380,9 @@ async def criar_aplicacao_fullstack(
 
     # Mesmo comportamento: se já existir (dominio, estado, slug),
     # desativa as anteriores antes de criar a nova.
-    tinha_anteriores = _desativar_anteriores_mesmo_slug_estado(db, dominio, slug, estado)
+    tinha_anteriores = _desativar_anteriores_mesmo_slug_estado(
+        db, dominio, slug, estado
+    )
 
     # 1) Calcular URL completa e slug de deploy (mesma lógica do frontend)
     empresa_seg = _empresa_segment_sa(db, id_empresa)
@@ -346,6 +390,13 @@ async def criar_aplicacao_fullstack(
 
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)  # isso é o que vai para o deploy
+
+    # Caminho base do backend (sempre no mesmo prefixo do front, com /api)
+    api_base_path = _build_api_base_path(
+        estado=estado,
+        slug=slug,
+        empresa_seg=empresa_seg,
+    )
 
     # 2) Criar registro na tabela global.aplicacoes
     app_row = _criar_aplicacao_model(
@@ -394,10 +445,10 @@ async def criar_aplicacao_fullstack(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_path=zip_path,
-                empresa=empresa_seg,            # mesmo conceito de empresa do /aplicacoes/criar
+                empresa=empresa_seg,        # mesmo conceito de empresa do /aplicacoes/criar
                 id_empresa=id_empresa,
                 aplicacao_id=app_row.id,
-                api_base=API_BASE_FOR_ACTIONS or "",
+                api_base=api_base_path,     # ex.: '/beta/htty/api/' ou '/beta/pinacle/rr/api/'
             )
     except Exception as e:
         # Deploy falhou, mas a aplicação foi criada; devolvemos erro explicando.
