@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 import os
+import re
 from typing import Optional
 
 from fastapi import (
@@ -14,6 +15,7 @@ from fastapi import (
     status,
 )
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from database import get_db
 from models.users import User
@@ -23,6 +25,72 @@ from services.deploy_adapter import get_deployer
 from auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/aplicacoes", tags=["Aplicações Fullstack"])
+
+# >>> Base da API que o GitHub Actions deve chamar para atualizar status
+API_BASE_FOR_ACTIONS = (
+    os.getenv("ACTIONS_API_BASE")
+    or os.getenv("API_BASE_FOR_ACTIONS")
+    or os.getenv("API_BASE")
+)
+
+
+# =============================================================================
+#                    HELPERS (iguais à lógica de /aplicacoes)
+# =============================================================================
+def _is_producao(estado: Optional[str]) -> bool:
+    return (estado or "producao") == "producao"
+
+
+def _empresa_segment_sa(db: Session, id_empresa: Optional[int]) -> Optional[str]:
+    """
+    Versão para usar com Session (igual _empresa_segment do aplicacoes.py,
+    só que aproveitando o db já injetado).
+    """
+    if not id_empresa:
+        return None
+    raw = db.execute(
+        text("SELECT lower(nome) FROM global.empresas WHERE id = :id LIMIT 1"),
+        {"id": id_empresa},
+    ).scalar()
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Empresa não encontrado.")
+
+    s = raw.strip().lower()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^a-z0-9-]", "-", s)
+    s = re.sub(r"-{2,}", "-", s)
+    s = s.strip("-")
+    return s or None
+
+
+def _canonical_url(dominio: str, estado: Optional[str], slug: Optional[str], empresa_seg: Optional[str]) -> str:
+    """
+    Mesmo cálculo de URL do /aplicacoes/criar:
+    https://dominio/[estado se != producao]/[empresa_seg]/[slug]
+    """
+    base = f"https://{dominio}".rstrip("/")
+    parts = []
+    if estado and not _is_producao(estado):
+        parts.append(estado.strip("/"))
+    if empresa_seg:
+        parts.append(empresa_seg.strip("/"))
+    if slug:
+        parts.append(slug.strip("/"))
+    return base + ("/" + "/".join(parts) if parts else "/")
+
+
+def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
+    """
+    Mesmo helper usado em /aplicacoes:
+    - producao: "<slug>" ou ""
+    - beta/dev: "estado/slug" ou "estado"
+    - desativado/None: None
+    """
+    if not estado or estado == "desativado":
+        return None
+    if estado == "producao":
+        return (slug or "")
+    return f"{estado}/{slug}" if slug else estado
 
 
 def _as_singleton_list_or_none(raw: Optional[str]):
@@ -50,8 +118,12 @@ def _criar_aplicacao_model(
     dados_de_entrada: Optional[str],
     tipos_de_retorno: Optional[str],
     servidor: Optional[str],
+    url_completa: Optional[str],
 ) -> Aplicacao:
-    """Monta o objeto Aplicacao para FULLSTACK (sempre front_ou_back='fullstack')."""
+    """
+    Monta o objeto Aplicacao para FULLSTACK (sempre front_ou_back='fullstack'),
+    já com url_completa calculada igual ao fluxo de frontend.
+    """
     dados_list = _as_singleton_list_or_none(dados_de_entrada)
     tipos_list = _as_singleton_list_or_none(tipos_de_retorno)
 
@@ -59,7 +131,7 @@ def _criar_aplicacao_model(
         dominio=dominio,
         slug=slug,
         arquivo_zip=zip_bytes,
-        url_completa=None,          # se quiser, depois pode ser atualizada
+        url_completa=url_completa,
         front_ou_back="fullstack",  # sempre fullstack
         estado=estado,
         id_empresa=id_empresa,
@@ -71,7 +143,7 @@ def _criar_aplicacao_model(
         porta=None,
         servidor=servidor,
         tipo_api=None,
-        desvio_caso=None,          # não usamos para fullstack
+        desvio_caso=None,  # não usamos para fullstack
     )
 
 
@@ -80,17 +152,16 @@ def _desativar_anteriores_mesmo_slug_estado(
     dominio: str,
     slug: Optional[str],
     estado: Optional[str],
-) -> None:
+) -> bool:
     """
     Se já existir aplicação com mesmo (dominio, estado, slug),
     marca todas como 'desativado' antes de criar a nova.
 
-    Isso evita o erro de UNIQUE em (dominio, estado, slug) e
-    garante que sempre haja só uma ativa por combinação.
+    Retorna True se desativou alguma (para sabermos se precisamos
+    mandar um dispatch_delete, igual ao /aplicacoes/criar).
     """
-    # Se não mandou estado ou slug, esse índice único não entra em jogo.
     if not slug or not estado:
-        return
+        return False
 
     antigos = (
         db.query(Aplicacao)
@@ -103,13 +174,13 @@ def _desativar_anteriores_mesmo_slug_estado(
     )
 
     if not antigos:
-        return
+        return False
 
     for app in antigos:
         app.estado = "desativado"
 
-    # Garante que o UPDATE seja mandado pro banco antes do INSERT da nova
     db.flush()
+    return True
 
 
 # ============================================================================
@@ -166,10 +237,8 @@ async def registrar_aplicacao_fullstack(
 
     - Salva o ZIP completo em global.aplicacoes.arquivo_zip.
     - Marca front_ou_back = 'fullstack'.
+    - Calcula url_completa igual ao /aplicacoes/criar.
     - NÃO dispara nenhum deploy (nem frontend, nem backend).
-
-    Útil quando você quer primeiro registrar a aplicação, depois ajustar metadados
-    no painel de deploy e só então mandar publicar.
     """
     zip_bytes = await arquivo_zip.read()
     if not zip_bytes:
@@ -177,6 +246,10 @@ async def registrar_aplicacao_fullstack(
 
     # Se já existe (dominio, estado, slug), marca os antigos como desativado
     _desativar_anteriores_mesmo_slug_estado(db, dominio, slug, estado)
+
+    # Mesmo cálculo de URL que o fluxo de frontend
+    empresa_seg = _empresa_segment_sa(db, id_empresa)
+    url_full = _canonical_url(dominio, estado, slug, empresa_seg)
 
     app_row = _criar_aplicacao_model(
         dominio=dominio,
@@ -189,6 +262,7 @@ async def registrar_aplicacao_fullstack(
         dados_de_entrada=dados_de_entrada,
         tipos_de_retorno=tipos_de_retorno,
         servidor=servidor,
+        url_completa=url_full,
     )
 
     db.add(app_row)
@@ -252,6 +326,7 @@ async def criar_aplicacao_fullstack(
 
     - Salva o ZIP completo em global.aplicacoes.arquivo_zip.
     - Marca front_ou_back = 'fullstack'.
+    - Calcula url_completa igual ao /aplicacoes/criar.
     - Chama RunnerDeployer.dispatch_fullstack(), que:
         * separa o ZIP em frontend.zip e backend.zip
         * frontend → deploy_landing.sh (com metadados, igual deploy de front normal)
@@ -263,9 +338,16 @@ async def criar_aplicacao_fullstack(
 
     # Mesmo comportamento: se já existir (dominio, estado, slug),
     # desativa as anteriores antes de criar a nova.
-    _desativar_anteriores_mesmo_slug_estado(db, dominio, slug, estado)
+    tinha_anteriores = _desativar_anteriores_mesmo_slug_estado(db, dominio, slug, estado)
 
-    # 3) Criar registro na tabela global.aplicacoes
+    # 1) Calcular URL completa e slug de deploy (mesma lógica do frontend)
+    empresa_seg = _empresa_segment_sa(db, id_empresa)
+    url_full = _canonical_url(dominio, estado, slug, empresa_seg)
+
+    estado_efetivo = estado or "producao"
+    slug_deploy = _deploy_slug(slug, estado_efetivo)  # isso é o que vai para o deploy
+
+    # 2) Criar registro na tabela global.aplicacoes
     app_row = _criar_aplicacao_model(
         dominio=dominio,
         slug=slug,
@@ -277,13 +359,14 @@ async def criar_aplicacao_fullstack(
         dados_de_entrada=dados_de_entrada,
         tipos_de_retorno=tipos_de_retorno,
         servidor=servidor,
+        url_completa=url_full,
     )
 
     db.add(app_row)
     db.commit()
     db.refresh(app_row)
 
-    # 4) Escrever o ZIP em disco para o Runner ler (zip_path)
+    # 3) Escrever o ZIP em disco para o Runner ler (zip_path)
     base_tmp = "/opt/app/api/fullstack_tmp"
     os.makedirs(base_tmp, exist_ok=True)
     run_dir = os.path.join(
@@ -295,19 +378,27 @@ async def criar_aplicacao_fullstack(
     with open(zip_path, "wb") as f:
         f.write(zip_bytes)
 
-    # 5) Disparar o deploy FULLSTACK via RunnerDeployer
+    # 4) Disparar o deploy FULLSTACK via RunnerDeployer
     deployer = get_deployer()
 
     try:
-        deployer.dispatch_fullstack(
-            domain=dominio,
-            slug=slug or "",
-            zip_path=zip_path,
-            empresa=None,            # no futuro dá pra passar nome da empresa aqui
-            id_empresa=id_empresa,
-            aplicacao_id=app_row.id,
-            api_base="",             # backend fica na mesma base do front (/_api/)
-        )
+        # Se desativou versões anteriores com o mesmo (dominio, estado, slug),
+        # manda um delete no path antigo, igual ao /aplicacoes/criar.
+        if tinha_anteriores:
+            old_path_remove = _deploy_slug(slug, estado)
+            if old_path_remove is not None:
+                deployer.dispatch_delete(domain=dominio, slug=old_path_remove or "")
+
+        if slug_deploy is not None:
+            deployer.dispatch_fullstack(
+                domain=dominio,
+                slug=slug_deploy or "",
+                zip_path=zip_path,
+                empresa=empresa_seg,            # mesmo conceito de empresa do /aplicacoes/criar
+                id_empresa=id_empresa,
+                aplicacao_id=app_row.id,
+                api_base=API_BASE_FOR_ACTIONS or "",
+            )
     except Exception as e:
         # Deploy falhou, mas a aplicação foi criada; devolvemos erro explicando.
         raise HTTPException(
