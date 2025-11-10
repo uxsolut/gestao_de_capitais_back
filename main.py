@@ -30,11 +30,11 @@ from routers import (
     robos,
     users,
     robos_do_user,
+    ordens,
     corretoras as r_corretoras,
     dashboard,
     cliente_contas,
     health,
-    fullstack,
 )
 from routers import aplicacoes  # router de Aplicações
 from routers import tipo_de_ordem as r_tipo_de_ordem
@@ -140,8 +140,9 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(consumo_processamento.router, tags=["Consumo Processamento"])
 
     elif mode == "public":
-        app.include_router(users.router)
+        app.include_router(ordens.router)
         app.include_router(robos.router)
+        app.include_router(users.router)
         app.include_router(robos_do_user.router)
         app.include_router(cliente_carteiras.router)
         app.include_router(r_corretoras.router)
@@ -149,7 +150,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(cliente_contas.router)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
         app.include_router(miniapis_router)
-        app.include_router(fullstack.router)
         app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router, tags=["Ativos"])
@@ -159,8 +159,9 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
 
     elif mode == "all":
-        app.include_router(users.router)
+        app.include_router(ordens.router)
         app.include_router(robos.router)
+        app.include_router(users.router)
         app.include_router(robos_do_user.router)
         app.include_router(cliente_carteiras.router)
         app.include_router(r_corretoras.router)
@@ -168,7 +169,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(cliente_contas.router)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
         app.include_router(miniapis_router)
-        app.include_router(fullstack.router)
         app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
         app.include_router(r_ativos.router)
