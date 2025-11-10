@@ -85,12 +85,10 @@ def create_app(mode: str = "all") -> FastAPI:
     App SEM qualquer lógica de navegação/fallback.
     Apenas expõe as rotas dos routers e a documentação.
     """
-    # Prefixo externo que você está usando (ex.: /api/docs no navegador)
     API_PREFIX = "/api"
-
     docs_enabled = mode in ("public", "all", "write", "read")
-    docs_url = f"{API_PREFIX}/docs" if docs_enabled else None
-    openapi_url = f"{API_PREFIX}/openapi.json" if docs_enabled else None
+    docs_url = "/docs" if docs_enabled else None
+    openapi_url = "/openapi.json" if docs_enabled else None
 
     # Se ROOT_PATH=/api no .env, tudo sai sob /api (ex.: /api/empresas, /api/docs)
     root_path = os.getenv("ROOT_PATH", "/processar-requisicao" if mode == "write" else "")
