@@ -26,7 +26,7 @@ from auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/aplicacoes", tags=["Aplicações Fullstack"])
 
-# >>> Base da API que o GitHub Actions deve chamar para atualizar status
+# >>> Base da API que o GitHub Actions / Runner deve chamar para atualizar status
 API_BASE_FOR_ACTIONS = (
     os.getenv("ACTIONS_API_BASE")
     or os.getenv("API_BASE_FOR_ACTIONS")
@@ -91,7 +91,9 @@ def _build_api_base_path(
     empresa_seg: Optional[str],
 ) -> str:
     """
-    Caminho base do backend, alinhado com a URL do front, mas com "/api" no fim.
+    Caminho base *lógico* do backend, alinhado com a URL do front,
+    com "/api" no fim. (Hoje não é enviado para o Runner; o path
+    real é decidido lá com base em domínio/estado/empresa/slug.)
 
     Exemplos:
         estado=None, empresa=None, slug='htt'
@@ -103,7 +105,6 @@ def _build_api_base_path(
     """
     parts = []
 
-    # estado só entra se não for produção
     if estado and not _is_producao(estado):
         parts.append(estado.strip("/"))
 
@@ -372,7 +373,7 @@ async def criar_aplicacao_fullstack(
     - Chama RunnerDeployer.dispatch_fullstack(), que:
         * separa o ZIP em frontend.zip e backend.zip
         * frontend → deploy_landing.sh (com metadados, igual deploy de front normal)
-        * backend  → publicado em <url_do_front>/api
+        * backend  → publicado em <url_do_front>/api (decidido pelo Runner)
     """
     zip_bytes = await arquivo_zip.read()
     if not zip_bytes:
@@ -391,12 +392,8 @@ async def criar_aplicacao_fullstack(
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)  # isso é o que vai para o deploy
 
-    # Caminho base do backend (sempre no mesmo prefixo do front, com /api)
-    api_base_path = _build_api_base_path(
-        estado=estado,
-        slug=slug,
-        empresa_seg=empresa_seg,
-    )
+    # Base que o Runner usa para chamar de volta a API de gestão
+    api_base_for_actions = API_BASE_FOR_ACTIONS or ""
 
     # 2) Criar registro na tabela global.aplicacoes
     app_row = _criar_aplicacao_model(
@@ -448,7 +445,7 @@ async def criar_aplicacao_fullstack(
                 empresa=empresa_seg,        # mesmo conceito de empresa do /aplicacoes/criar
                 id_empresa=id_empresa,
                 aplicacao_id=app_row.id,
-                api_base=api_base_path,     # ex.: '/beta/htty/api/' ou '/beta/pinacle/rr/api/'
+                api_base=api_base_for_actions,  # <<< VOLTOU AO COMPORTAMENTO ANTIGO
             )
     except Exception as e:
         # Deploy falhou, mas a aplicação foi criada; devolvemos erro explicando.
