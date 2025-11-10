@@ -1,5 +1,6 @@
 # routers/fullstack.py
 # -*- coding: utf-8 -*-
+
 from datetime import datetime
 import os
 import re
@@ -24,9 +25,10 @@ from schemas.aplicacoes import AplicacaoOut
 from services.deploy_adapter import get_deployer
 from auth.dependencies import get_current_user
 
+
 router = APIRouter(prefix="/aplicacoes", tags=["Aplicações Fullstack"])
 
-# >>> Base da API que o GitHub Actions / Runner deve chamar para atualizar status
+# >>> Base da API que o GitHub Actions deve chamar para atualizar status
 API_BASE_FOR_ACTIONS = (
     os.getenv("ACTIONS_API_BASE")
     or os.getenv("API_BASE_FOR_ACTIONS")
@@ -48,10 +50,12 @@ def _empresa_segment_sa(db: Session, id_empresa: Optional[int]) -> Optional[str]
     """
     if not id_empresa:
         return None
+
     raw = db.execute(
         text("SELECT lower(nome) FROM global.empresas WHERE id = :id LIMIT 1"),
         {"id": id_empresa},
     ).scalar()
+
     if raw is None:
         raise HTTPException(status_code=404, detail="Empresa não encontrado.")
 
@@ -75,51 +79,17 @@ def _canonical_url(
     """
     base = f"https://{dominio}".rstrip("/")
     parts = []
+
     if estado and not _is_producao(estado):
         parts.append(estado.strip("/"))
+
     if empresa_seg:
         parts.append(empresa_seg.strip("/"))
+
     if slug:
         parts.append(slug.strip("/"))
+
     return base + ("/" + "/".join(parts) if parts else "/")
-
-
-def _build_api_base_path(
-    *,
-    estado: Optional[str],
-    slug: Optional[str],
-    empresa_seg: Optional[str],
-) -> str:
-    """
-    Caminho base *lógico* do backend, alinhado com a URL do front,
-    com "/api" no fim. (Hoje não é enviado para o Runner; o path
-    real é decidido lá com base em domínio/estado/empresa/slug.)
-
-    Exemplos:
-        estado=None, empresa=None, slug='htt'
-            -> '/htt/api/'
-        estado='beta', empresa=None, slug='htt'
-            -> '/beta/htt/api/'
-        estado='beta', empresa='pinacle', slug='rr'
-            -> '/beta/pinacle/rr/api/'
-    """
-    parts = []
-
-    if estado and not _is_producao(estado):
-        parts.append(estado.strip("/"))
-
-    if empresa_seg:
-        parts.append(empresa_seg.strip("/"))
-
-    if slug:
-        parts.append(slug.strip("/"))
-
-    if not parts:
-        base = "/"
-    else:
-        base = "/" + "/".join(parts)
-
-    return base.rstrip("/") + "/api/"
 
 
 def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
@@ -131,8 +101,10 @@ def _deploy_slug(slug: Optional[str], estado: Optional[str]) -> Optional[str]:
     """
     if not estado or estado == "desativado":
         return None
+
     if estado == "producao":
         return (slug or "")
+
     return f"{estado}/{slug}" if slug else estado
 
 
@@ -143,9 +115,11 @@ def _as_singleton_list_or_none(raw: Optional[str]):
     """
     if raw is None:
         return None
+
     s = raw.strip()
     if not s:
         return None
+
     return [s]
 
 
@@ -200,8 +174,8 @@ def _desativar_anteriores_mesmo_slug_estado(
     Se já existir aplicação com mesmo (dominio, estado, slug),
     marca todas como 'desativado' antes de criar a nova.
 
-    Retorna True se desativou alguma (para sabermos se precisamos
-    mandar um dispatch_delete, igual ao /aplicacoes/criar).
+    Retorna True se desativou alguma (para sabermos se precisamos mandar
+    um dispatch_delete, igual ao /aplicacoes/criar).
     """
     if not slug or not estado:
         return False
@@ -229,7 +203,6 @@ def _desativar_anteriores_mesmo_slug_estado(
 # ============================================================================
 # 1) REGISTRAR FULLSTACK (SEM DEPLOY)
 # ============================================================================
-
 @router.post(
     "/fullstack/registrar",
     response_model=AplicacaoOut,
@@ -277,7 +250,6 @@ async def registrar_aplicacao_fullstack(
 ):
     """
     Só REGISTRA a aplicação FULLSTACK:
-
     - Salva o ZIP completo em global.aplicacoes.arquivo_zip.
     - Marca front_ou_back = 'fullstack'.
     - Calcula url_completa igual ao /aplicacoes/criar.
@@ -311,14 +283,12 @@ async def registrar_aplicacao_fullstack(
     db.add(app_row)
     db.commit()
     db.refresh(app_row)
-
     return app_row
 
 
 # ============================================================================
 # 2) CRIAR FULLSTACK + DISPARAR DEPLOY IMEDIATO
 # ============================================================================
-
 @router.post(
     "/fullstack",
     response_model=AplicacaoOut,
@@ -366,14 +336,13 @@ async def criar_aplicacao_fullstack(
 ):
     """
     Cria a aplicação FULLSTACK **e já dispara o deploy** via Runner:
-
     - Salva o ZIP completo em global.aplicacoes.arquivo_zip.
     - Marca front_ou_back = 'fullstack'.
     - Calcula url_completa igual ao /aplicacoes/criar.
     - Chama RunnerDeployer.dispatch_fullstack(), que:
-        * separa o ZIP em frontend.zip e backend.zip
-        * frontend → deploy_landing.sh (com metadados, igual deploy de front normal)
-        * backend  → publicado em <url_do_front>/api (decidido pelo Runner)
+      * separa o ZIP em frontend.zip e backend.zip
+      * frontend → deploy_landing.sh (com metadados, igual deploy de front normal)
+      * backend → publicado em <url_do_front>/_api/
     """
     zip_bytes = await arquivo_zip.read()
     if not zip_bytes:
@@ -382,18 +351,17 @@ async def criar_aplicacao_fullstack(
     # Mesmo comportamento: se já existir (dominio, estado, slug),
     # desativa as anteriores antes de criar a nova.
     tinha_anteriores = _desativar_anteriores_mesmo_slug_estado(
-        db, dominio, slug, estado
+        db,
+        dominio,
+        slug,
+        estado,
     )
 
     # 1) Calcular URL completa e slug de deploy (mesma lógica do frontend)
     empresa_seg = _empresa_segment_sa(db, id_empresa)
     url_full = _canonical_url(dominio, estado, slug, empresa_seg)
-
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)  # isso é o que vai para o deploy
-
-    # Base que o Runner usa para chamar de volta a API de gestão
-    api_base_for_actions = API_BASE_FOR_ACTIONS or ""
 
     # 2) Criar registro na tabela global.aplicacoes
     app_row = _criar_aplicacao_model(
@@ -417,8 +385,10 @@ async def criar_aplicacao_fullstack(
     # 3) Escrever o ZIP em disco para o Runner ler (zip_path)
     base_tmp = "/opt/app/api/fullstack_tmp"
     os.makedirs(base_tmp, exist_ok=True)
+
     run_dir = os.path.join(
-        base_tmp, f"{app_row.id}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S-%f')}"
+        base_tmp,
+        f"{app_row.id}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S-%f')}",
     )
     os.makedirs(run_dir, exist_ok=True)
 
@@ -428,7 +398,6 @@ async def criar_aplicacao_fullstack(
 
     # 4) Disparar o deploy FULLSTACK via RunnerDeployer
     deployer = get_deployer()
-
     try:
         # Se desativou versões anteriores com o mesmo (dominio, estado, slug),
         # manda um delete no path antigo, igual ao /aplicacoes/criar.
@@ -442,10 +411,10 @@ async def criar_aplicacao_fullstack(
                 domain=dominio,
                 slug=slug_deploy or "",
                 zip_path=zip_path,
-                empresa=empresa_seg,        # mesmo conceito de empresa do /aplicacoes/criar
+                empresa=empresa_seg,  # mesmo conceito de empresa do /aplicacoes/criar
                 id_empresa=id_empresa,
                 aplicacao_id=app_row.id,
-                api_base=api_base_for_actions,  # <<< VOLTOU AO COMPORTAMENTO ANTIGO
+                api_base=API_BASE_FOR_ACTIONS or "",
             )
     except Exception as e:
         # Deploy falhou, mas a aplicação foi criada; devolvemos erro explicando.
