@@ -85,6 +85,8 @@ def create_app(mode: str = "all") -> FastAPI:
     App SEM qualquer lógica de navegação/fallback.
     Apenas expõe as rotas dos routers e a documentação.
     """
+    API_PREFIX = "/api"
+    
     docs_enabled = mode in ("public", "all", "write", "read")
     docs_url = "/docs" if docs_enabled else None
     openapi_url = "/openapi.json" if docs_enabled else None
