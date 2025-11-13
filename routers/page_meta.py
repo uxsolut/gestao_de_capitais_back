@@ -57,6 +57,12 @@ def _ensure_leading_slash(path: str) -> str:
     return path if path.startswith("/") else f"/{path}"
 
 
+def _ensure_trailing_slash(path: str) -> str:  # <<< adição
+    if not path:
+        return "/"
+    return path if path.endswith("/") else f"{path}/"
+
+
 def _url_path_only(full: Optional[str]) -> str:
     """Extrai apenas o path da URL (sem domínio, sem query/fragment)."""
     if not full:
@@ -334,7 +340,8 @@ def create_or_update_page_meta_and_deploy(
                 estado::text AS estado,
                 id_empresa,
                 arquivo_zip,
-                url_completa::text AS url_completa
+                url_completa::text AS url_completa,
+                front_ou_back::text AS front_ou_back        -- <<< adição
             FROM global.aplicacoes
             WHERE id = :id
             LIMIT 1
@@ -345,6 +352,7 @@ def create_or_update_page_meta_and_deploy(
 
     canonical_from_app = app_row["url_completa"]
     rota_from_app = _url_path_only(canonical_from_app)
+    api_base_path = _ensure_trailing_slash(rota_from_app) + "api/"   # <<< adição
 
     # 1) UPSERT page_meta pela chave composta (rota derivada)
     derived_rota = rota_from_app
@@ -428,19 +436,33 @@ def create_or_update_page_meta_and_deploy(
 
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)
+    is_fullstack = (app_row.get("front_ou_back") == "fullstack")   # <<< adição
 
     try:
         if slug_deploy is not None:
             get_deployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
-            get_deployer().dispatch(
-                domain=dominio,
-                slug=slug_deploy or "",
-                zip_url=zip_url,
-                empresa=empresa_seg or "",
-                id_empresa=id_empresa,
-                aplicacao_id=str(body.aplicacao_id),
-                api_base=API_BASE_FOR_ACTIONS,
-            )
+            if is_fullstack:  # <<< adição
+                # fullstack: dispara pipeline que publica front + back (/api/)
+                get_deployer().dispatch_fullstack(
+                    domain=dominio,
+                    slug=slug_deploy or "",
+                    zip_url=zip_url,                # usar o ZIP salvo
+                    empresa=empresa_seg or "",
+                    id_empresa=id_empresa,
+                    aplicacao_id=str(body.aplicacao_id),
+                    api_base=api_base_path,         # p.ex. "/beta/pinacle/app/api/"
+                )
+            else:
+                # frontend puro: comportamento original
+                get_deployer().dispatch(
+                    domain=dominio,
+                    slug=slug_deploy or "",
+                    zip_url=zip_url,
+                    empresa=empresa_seg or "",
+                    id_empresa=id_empresa,
+                    aplicacao_id=str(body.aplicacao_id),
+                    api_base=API_BASE_FOR_ACTIONS,
+                )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Metadados salvos, status atualizado, mas falhou o deploy: {e}")
 
@@ -465,7 +487,8 @@ def update_page_meta_and_deploy(
         app_row = conn.execute(text("""
             SELECT
                 id, dominio::text AS dominio, slug, estado::text AS estado,
-                id_empresa, arquivo_zip, url_completa::text AS url_completa
+                id_empresa, arquivo_zip, url_completa::text AS url_completa,
+                front_ou_back::text AS front_ou_back     -- <<< adição
             FROM global.aplicacoes
             WHERE id = :id
             LIMIT 1
@@ -476,6 +499,7 @@ def update_page_meta_and_deploy(
 
     canonical_from_app = app_row["url_completa"]
     rota_from_app = _url_path_only(canonical_from_app)
+    api_base_path = _ensure_trailing_slash(rota_from_app) + "api/"   # <<< adição
 
     new_ap = body.aplicacao_id or item.aplicacao_id
     new_ro = rota_from_app
@@ -545,19 +569,31 @@ def update_page_meta_and_deploy(
 
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)
+    is_fullstack = (app_row.get("front_ou_back") == "fullstack")   # <<< adição
 
     try:
         if slug_deploy is not None:
             get_deployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
-            get_deployer().dispatch(
-                domain=dominio,
-                slug=slug_deploy or "",
-                zip_url=zip_url,
-                empresa=empresa_seg or "",
-                id_empresa=id_empresa,
-                aplicacao_id=str(item.aplicacao_id),
-                api_base=API_BASE_FOR_ACTIONS,
-            )
+            if is_fullstack:  # <<< adição
+                get_deployer().dispatch_fullstack(
+                    domain=dominio,
+                    slug=slug_deploy or "",
+                    zip_url=zip_url,
+                    empresa=empresa_seg or "",
+                    id_empresa=id_empresa,
+                    aplicacao_id=str(item.aplicacao_id),
+                    api_base=api_base_path,
+                )
+            else:
+                get_deployer().dispatch(
+                    domain=dominio,
+                    slug=slug_deploy or "",
+                    zip_url=zip_url,
+                    empresa=empresa_seg or "",
+                    id_empresa=id_empresa,
+                    aplicacao_id=str(item.aplicacao_id),
+                    api_base=API_BASE_FOR_ACTIONS,
+                )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Metadados atualizados, mas falhou o deploy: {e}")
 
