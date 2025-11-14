@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any
 import os
 import time
 import json
+from datetime import datetime
 from decimal import Decimal
 from urllib.parse import urlsplit
 
@@ -57,7 +58,7 @@ def _ensure_leading_slash(path: str) -> str:
     return path if path.startswith("/") else f"/{path}"
 
 
-def _ensure_trailing_slash(path: str) -> str:  # <<< adição
+def _ensure_trailing_slash(path: str) -> str:
     if not path:
         return "/"
     return path if path.endswith("/") else f"{path}/"
@@ -72,7 +73,6 @@ def _url_path_only(full: Optional[str]) -> str:
         path = parsed.path or "/"
         return _ensure_leading_slash(path)
     except Exception:
-        # fallback simples
         if "://" in full:
             full = full.split("://", 1)[1]
             full = full[full.find("/") :] if "/" in full else ""
@@ -214,15 +214,10 @@ def _upsert_localbiz(db: Session, page_meta_id: int, data: Optional[LocalBusines
 
 # ---------- helpers para montar a resposta com filhos ----------
 def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
-    """
-    Carrega filhos (article, product, localbusiness) para os page_meta_ids informados.
-    Retorna: { page_meta_id: {"article": {...} | None, "product": {...}|None, "localbusiness": {...}|None } }
-    """
     out: Dict[int, Dict[str, Any]] = {i: {"article": None, "product": None, "localbusiness": None} for i in ids}
     if not ids:
         return out
 
-    # ARTICLE (sem datas)
     rows = db.execute(text("""
         SELECT page_meta_id, type, headline, description, author_name, image_urls
           FROM metadados.page_meta_article
@@ -240,7 +235,6 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
             "image_urls": imgs,
         }
 
-    # PRODUCT
     rows = db.execute(text("""
         SELECT page_meta_id, name, description, sku, brand, price_currency,
                price, availability, item_condition, price_valid_until, image_urls
@@ -264,7 +258,6 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
             "image_urls": imgs,
         }
 
-    # LOCALBUSINESS
     rows = db.execute(text("""
         SELECT page_meta_id, business_name, phone, price_range, street, city, region, zip,
                latitude, longitude, opening_hours, image_urls, logo_url
@@ -300,7 +293,6 @@ def _fetch_children(db: Session, ids: List[int]) -> Dict[int, Dict[str, Any]]:
 
 
 def _to_out_dict(pm: PageMeta, children: Dict[str, Any]) -> Dict[str, Any]:
-    """Monta um dict compatível com PageMetaOut (com filhos)."""
     return {
         "id": pm.id,
         "aplicacao_id": pm.aplicacao_id,
@@ -330,7 +322,7 @@ def create_or_update_page_meta_and_deploy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # 0) Busca dados da aplicação (para canonical e rota)
+    # 0) Busca dados da aplicação
     with engine.begin() as conn:
         app_row = conn.execute(text("""
             SELECT
@@ -341,26 +333,23 @@ def create_or_update_page_meta_and_deploy(
                 id_empresa,
                 arquivo_zip,
                 url_completa::text AS url_completa,
-                front_ou_back::text AS front_ou_back        -- <<< adição
+                front_ou_back::text AS front_ou_back
             FROM global.aplicacoes
             WHERE id = :id
             LIMIT 1
         """), {"id": body.aplicacao_id}).mappings().first()
-
         if not app_row:
             raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
 
     canonical_from_app = app_row["url_completa"]
     rota_from_app = _url_path_only(canonical_from_app)
-    api_base_path = _ensure_trailing_slash(rota_from_app) + "api/"   # <<< adição
+    api_base_path = _ensure_trailing_slash(rota_from_app) + "api/"
 
-    # 1) UPSERT page_meta pela chave composta (rota derivada)
+    # 1) Upsert PageMeta por (aplicacao_id, rota, lang_tag)
     derived_rota = rota_from_app
     row = db.execute(text("""
         SELECT id FROM metadados.page_meta
-         WHERE aplicacao_id = :ap
-           AND rota = :ro
-           AND lang_tag = :la
+         WHERE aplicacao_id = :ap AND rota = :ro AND lang_tag = :la
          LIMIT 1
     """), {"ap": body.aplicacao_id, "ro": derived_rota, "la": body.lang_tag}).mappings().first()
 
@@ -403,58 +392,72 @@ def create_or_update_page_meta_and_deploy(
     db.commit()
     db.refresh(item)
 
-    # 3) Preparação do ZIP + status/deploy
+    # 3) Preparação dos artefatos
     if not BASE_UPLOADS_URL:
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
 
+    # Sempre temos zip em banco para reaproveitar
+    zip_bytes: bytes = app_row["arquivo_zip"]
+    if not zip_bytes:
+        raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
+
+    dominio    = app_row["dominio"]
+    slug       = app_row["slug"]
+    estado     = app_row["estado"]
+    id_empresa = app_row["id_empresa"]
+
+    # Para FRONTEND: publicamos em URL (comportamento existente).
+    # Para FULLSTACK: gravamos também em disco e passamos zip_path (igual /aplicacoes/fullstack).
+    ts = int(time.time())
+    fname = f"{(slug or 'root')}-{body.aplicacao_id}-{ts}.zip"
+    fpath_upload = os.path.join(BASE_UPLOADS_DIR, fname)
+    with open(fpath_upload, "wb") as f:
+        f.write(zip_bytes)
+    zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
+
+    # zip_path para fullstack (mesmo diretório temporário do fullstack.py)
+    base_tmp = "/opt/app/api/fullstack_tmp"
+    os.makedirs(base_tmp, exist_ok=True)
+    run_dir = os.path.join(base_tmp, f"{body.aplicacao_id}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S-%f')}")
+    os.makedirs(run_dir, exist_ok=True)
+    zip_path = os.path.join(run_dir, "release_fullstack.zip")
+    with open(zip_path, "wb") as f:
+        f.write(zip_bytes)
+
+    # Atualiza status
     with engine.begin() as conn:
-        zip_bytes: bytes = app_row["arquivo_zip"]
-        if not zip_bytes:
-            raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
-
-        dominio    = app_row["dominio"]
-        slug       = app_row["slug"]
-        estado     = app_row["estado"]
-        id_empresa = app_row["id_empresa"]
-
-        ts = int(time.time())
-        fname = f"{(slug or 'root')}-{body.aplicacao_id}-{ts}.zip"
-        fpath = os.path.join(BASE_UPLOADS_DIR, fname)
-        with open(fpath, "wb") as f:
-            f.write(zip_bytes)
-        zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
-
         conn.execute(text("""
             INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
             VALUES (:id, 'em andamento', NULL)
             ON CONFLICT (aplicacao_id) DO UPDATE
               SET status='em andamento', resumo_do_erro=NULL
         """), {"id": body.aplicacao_id})
-
         empresa_seg = _empresa_segment(conn, id_empresa)
 
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)
-    is_fullstack = (app_row.get("front_ou_back") == "fullstack")   # <<< adição
+    is_fullstack = (str(app_row.get("front_ou_back") or "").lower() == "fullstack")
 
+    # 4) Dispatch
     try:
         if slug_deploy is not None:
-            get_deployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
-            if is_fullstack:  # <<< adição
-                # fullstack: dispara pipeline que publica front + back (/api/)
-                get_deployer().dispatch_fullstack(
+            deployer = get_deployer()
+            deployer.dispatch_delete(domain=dominio, slug=slug_deploy or "")
+
+            if is_fullstack:
+                # mesmo shape usado em /aplicacoes/fullstack
+                deployer.dispatch_fullstack(
                     domain=dominio,
                     slug=slug_deploy or "",
-                    zip_url=zip_url,                # usar o ZIP salvo
+                    zip_path=zip_path,
                     empresa=empresa_seg or "",
                     id_empresa=id_empresa,
-                    aplicacao_id=str(body.aplicacao_id),
-                    api_base=api_base_path,         # p.ex. "/beta/pinacle/app/api/"
+                    aplicacao_id=body.aplicacao_id,
+                    api_base=api_base_path,   # ex.: '/beta/pastel/api/'
                 )
             else:
-                # frontend puro: comportamento original
-                get_deployer().dispatch(
+                deployer.dispatch(
                     domain=dominio,
                     slug=slug_deploy or "",
                     zip_url=zip_url,
@@ -482,36 +485,31 @@ def update_page_meta_and_deploy(
     if not item:
         raise HTTPException(status_code=404, detail="page_meta não encontrada.")
 
-    # Sempre recalcula canonical e rota a partir da aplicação
+    # Recarrega dados da aplicação
     with engine.begin() as conn:
         app_row = conn.execute(text("""
             SELECT
                 id, dominio::text AS dominio, slug, estado::text AS estado,
                 id_empresa, arquivo_zip, url_completa::text AS url_completa,
-                front_ou_back::text AS front_ou_back     -- <<< adição
+                front_ou_back::text AS front_ou_back
             FROM global.aplicacoes
             WHERE id = :id
             LIMIT 1
         """), {"id": body.aplicacao_id or item.aplicacao_id}).mappings().first()
-
         if not app_row:
             raise HTTPException(status_code=404, detail="Aplicação não encontrada para o aplicacao_id informado.")
 
     canonical_from_app = app_row["url_completa"]
     rota_from_app = _url_path_only(canonical_from_app)
-    api_base_path = _ensure_trailing_slash(rota_from_app) + "api/"   # <<< adição
+    api_base_path = _ensure_trailing_slash(rota_from_app) + "api/"
 
     new_ap = body.aplicacao_id or item.aplicacao_id
     new_ro = rota_from_app
     new_la = body.lang_tag or item.lang_tag
 
-    # checa conflito
     row = db.execute(text("""
         SELECT id FROM metadados.page_meta
-         WHERE id <> :cur
-           AND aplicacao_id = :ap
-           AND rota = :ro
-           AND lang_tag = :la
+         WHERE id <> :cur AND aplicacao_id = :ap AND rota = :ro AND lang_tag = :la
          LIMIT 1
     """), {"cur": page_meta_id, "ap": new_ap, "ro": new_ro, "la": new_la}).mappings().first()
     if row:
@@ -541,51 +539,59 @@ def update_page_meta_and_deploy(
         raise HTTPException(status_code=500, detail="BASE_UPLOADS_URL não configurado.")
     os.makedirs(BASE_UPLOADS_DIR, exist_ok=True)
 
+    zip_bytes: bytes = app_row["arquivo_zip"]
+    if not zip_bytes:
+        raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
+
+    dominio    = app_row["dominio"]
+    slug       = app_row["slug"]
+    estado     = app_row["estado"]
+    id_empresa = app_row["id_empresa"]
+
+    ts = int(time.time())
+    fname = f"{(slug or 'root')}-{item.aplicacao_id}-{ts}.zip"
+    fpath_upload = os.path.join(BASE_UPLOADS_DIR, fname)
+    with open(fpath_upload, "wb") as f:
+        f.write(zip_bytes)
+    zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
+
+    base_tmp = "/opt/app/api/fullstack_tmp"
+    os.makedirs(base_tmp, exist_ok=True)
+    run_dir = os.path.join(base_tmp, f"{item.aplicacao_id}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S-%f')}")
+    os.makedirs(run_dir, exist_ok=True)
+    zip_path = os.path.join(run_dir, "release_fullstack.zip")
+    with open(zip_path, "wb") as f:
+        f.write(zip_bytes)
+
     with engine.begin() as conn:
-        zip_bytes: bytes = app_row["arquivo_zip"]
-        if not zip_bytes:
-            raise HTTPException(status_code=400, detail="A aplicação não possui arquivo_zip salvo.")
-
-        dominio    = app_row["dominio"]
-        slug       = app_row["slug"]
-        estado     = app_row["estado"]
-        id_empresa = app_row["id_empresa"]
-
-        ts = int(time.time())
-        fname = f"{(slug or 'root')}-{item.aplicacao_id}-{ts}.zip"
-        fpath = os.path.join(BASE_UPLOADS_DIR, fname)
-        with open(fpath, "wb") as f:
-            f.write(zip_bytes)
-        zip_url = f"{BASE_UPLOADS_URL.rstrip('/')}/{fname}"
-
         conn.execute(text("""
             INSERT INTO global.status_da_aplicacao (aplicacao_id, status, resumo_do_erro)
             VALUES (:id, 'em andamento', NULL)
             ON CONFLICT (aplicacao_id) DO UPDATE
               SET status='em andamento', resumo_do_erro=NULL
         """), {"id": item.aplicacao_id})
-
         empresa_seg = _empresa_segment(conn, id_empresa)
 
     estado_efetivo = estado or "producao"
     slug_deploy = _deploy_slug(slug, estado_efetivo)
-    is_fullstack = (app_row.get("front_ou_back") == "fullstack")   # <<< adição
+    is_fullstack = (str(app_row.get("front_ou_back") or "").lower() == "fullstack")
 
     try:
         if slug_deploy is not None:
-            get_deployer().dispatch_delete(domain=dominio, slug=slug_deploy or "")
-            if is_fullstack:  # <<< adição
-                get_deployer().dispatch_fullstack(
+            deployer = get_deployer()
+            deployer.dispatch_delete(domain=dominio, slug=slug_deploy or "")
+            if is_fullstack:
+                deployer.dispatch_fullstack(
                     domain=dominio,
                     slug=slug_deploy or "",
-                    zip_url=zip_url,
+                    zip_path=zip_path,
                     empresa=empresa_seg or "",
                     id_empresa=id_empresa,
-                    aplicacao_id=str(item.aplicacao_id),
+                    aplicacao_id=item.aplicacao_id,
                     api_base=api_base_path,
                 )
             else:
-                get_deployer().dispatch(
+                deployer.dispatch(
                     domain=dominio,
                     slug=slug_deploy or "",
                     zip_url=zip_url,
@@ -601,7 +607,7 @@ def update_page_meta_and_deploy(
     return PageMetaOut(**_to_out_dict(item, ch[item.id]))
 
 
-# --------------------------- GET (apenas por aplicacao_id) ---------------------------
+# --------------------------- GETs ---------------------------
 @router.get(
     "/",
     response_model=List[PageMetaOut],
@@ -611,7 +617,6 @@ def list_page_meta_by_app(
     aplicacao_id: int = Query(..., description="ID da aplicação"),
     db: Session = Depends(get_db),
 ):
-    # base
     stmt = select(PageMeta).where(PageMeta.aplicacao_id == aplicacao_id).order_by(PageMeta.id.desc())
     bases = db.execute(stmt).scalars().all()
     if not bases:
@@ -619,7 +624,6 @@ def list_page_meta_by_app(
 
     ids = [b.id for b in bases]
 
-    # filhos em lote
     art_rows = db.execute(text("""
         SELECT page_meta_id, type, headline, description, author_name, image_urls
           FROM metadados.page_meta_article
