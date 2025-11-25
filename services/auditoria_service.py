@@ -1,5 +1,5 @@
 """
-Serviço de auditoria para rastreamento de mudanças e compliance
+Serviço de auditoria para rastreamento de mudanças e complianc
 """
 import json
 import logging
