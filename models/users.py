@@ -27,6 +27,8 @@ class User(Base):
         server_default=text("'cliente'::user_role"),
     )
 
+    telefone = Column(String, nullable=True)
+
     # Relacionamentos válidos
     ordens        = relationship("Ordem",        foreign_keys="[Ordem.id_user]", back_populates="user")
     robos_do_user = relationship("RoboDoUser",   foreign_keys="[RoboDoUser.id_user]", back_populates="user")
