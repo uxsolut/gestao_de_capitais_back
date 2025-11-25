@@ -23,6 +23,8 @@ from models import ordens as m_ordens  # noqa: F401
 from models import aplicacoes as m_aplicacoes  # noqa: F401
 from models import empresas as m_empresas  # noqa: F401
 from models import page_meta as m_page_meta  # noqa: F401
+from models import whatsapp_envio as m_whatsapp_envio
+from models import email_envio as m_email_envio
 
 # --- Routers da aplicação ---
 from routers import (
@@ -46,6 +48,7 @@ from routers import status_aplicacao  # status da aplicação
 from routers import page_meta as r_page_meta
 from routers import media as r_media  # <<< ADICIONADO
 from routers import whatsapp as r_whatsapp
+from routers import email as r_email
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -160,6 +163,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_page_meta.router, tags=["Page Meta"])
         app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
         app.include_router(r_whatsapp.router, tags=["WhatsApp"])
+        app.include_router(r_email.router, tags=["Email"])
 
     elif mode == "all":
         app.include_router(users.router)
@@ -180,6 +184,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_page_meta.router, tags=["Page Meta"])
         app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
         app.include_router(r_whatsapp.router, tags=["WhatsApp"])
+        app.include_router(r_email.router, tags=["Email"])
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
