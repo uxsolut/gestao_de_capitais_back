@@ -21,9 +21,11 @@ class WhatsAppMensagemBase(BaseModel):
 
 class WhatsAppMensagemResponse(WhatsAppMensagemBase):
     """
-    Usado no GET /whatsapp/mensagens (lista leve, sem raw_payload)
+    Usado no GET /whatsapp/mensagens
+    (inclui raw_payload completo).
     """
     id: int
+    raw_payload: Dict[str, Any]
     created_at: datetime
 
     class Config:
@@ -32,6 +34,8 @@ class WhatsAppMensagemResponse(WhatsAppMensagemBase):
 
 class WhatsAppMensagemDetalheResponse(WhatsAppMensagemResponse):
     """
-    Usado no GET /whatsapp/mensagens/{id} (com raw_payload completo)
+    Usado no GET /whatsapp/mensagens/{id}.
+    Por enquanto é igual ao de lista, mas separado se
+    você quiser customizar depois.
     """
-    raw_payload: Dict[str, Any]
+    pass
