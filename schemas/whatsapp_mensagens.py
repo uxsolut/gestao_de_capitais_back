@@ -4,7 +4,7 @@
 from datetime import datetime
 from typing import Optional, Any, Dict
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class WhatsAppMensagemBase(BaseModel):
@@ -23,10 +23,9 @@ class WhatsAppMensagemBase(BaseModel):
 class WhatsAppMensagemResponse(WhatsAppMensagemBase):
     id: int
     created_at: datetime
-    updated_at: datetime
+
+    # Compatível com Pydantic v1 e v2
+    model_config = ConfigDict(from_attributes=True)
 
     class Config:
-        # FastAPI 0.95+ / Pydantic v1
         orm_mode = True
-        # Se você estiver usando Pydantic v2, use:
-        # from_attributes = True

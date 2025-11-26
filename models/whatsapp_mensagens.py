@@ -43,9 +43,3 @@ class WhatsAppMensagem(Base):
         nullable=False,
         default=datetime.utcnow,
     )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
