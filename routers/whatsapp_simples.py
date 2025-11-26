@@ -4,7 +4,8 @@
 import os
 import base64
 import logging
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Optional, List
 
 import httpx
 from fastapi import (
@@ -14,7 +15,14 @@ from fastapi import (
     UploadFile,
     HTTPException,
     Request,
+    Header,
+    Depends,
 )
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models.whatsapp_mensagens import WhatsAppMensagem
+from schemas.whatsapp_mensagens import WhatsAppMensagemResponse
 
 router = APIRouter(
     prefix="/whatsapp",
@@ -24,7 +32,7 @@ router = APIRouter(
 logger = logging.getLogger("whatsapp_zapi")
 
 # ================================
-# VARIÁVEIS DE AMBIENTE
+# VARIÁVEIS DE AMBIENTE / CONFIG
 # ================================
 # De acordo com o SEU .env:
 # ZAPI_INSTANCE_ID
@@ -36,6 +44,13 @@ ZAPI_BASE_URL = os.getenv("ZAPI_BASE_URL", "https://api.z-api.io")
 ZAPI_INSTANCE_ID = os.getenv("ZAPI_INSTANCE_ID")
 ZAPI_INSTANCE_TOKEN = os.getenv("ZAPI_INSTANCE_TOKEN")  # usa o que você já tem
 ZAPI_CLIENT_TOKEN = os.getenv("ZAPI_CLIENT_TOKEN")
+
+# 🔐 CHAVE SECRETA PARA USAR SUAS APIS (enviar + gets)
+# se quiser mudar, coloque WHATS_API_SECRET no .env
+WHATS_API_SECRET = os.getenv(
+    "WHATS_API_SECRET",
+    "y83!T7DtxgzfXKYB2hYkjkGJPjzev85W4E9RTZCjvc&ksE%x%o",
+)
 
 
 def _check_zapi_config():
@@ -59,6 +74,39 @@ def _check_zapi_config():
             ),
         )
 
+
+# ==========================================================
+# AUTENTICAÇÃO POR CHAVE SECRETA
+# ==========================================================
+
+async def validar_chave_secreta(
+    x_whats_secret: str = Header(
+        ...,
+        alias="X-Whats-Secret",
+        description="Chave secreta para usar a API de WhatsApp",
+    ),
+):
+    """
+    Valida a chave secreta enviada no header `X-Whats-Secret`.
+    Qualquer backend que tiver essa chave pode usar /whatsapp/enviar
+    e os endpoints protegidos (como GET de mensagens).
+    """
+    if not WHATS_API_SECRET:
+        raise HTTPException(
+            status_code=500,
+            detail="WHATS_API_SECRET não configurada no servidor.",
+        )
+
+    if x_whats_secret != WHATS_API_SECRET:
+        raise HTTPException(
+            status_code=401,
+            detail="Não autorizado: chave secreta inválida.",
+        )
+
+
+# ==========================================================
+# FUNÇÕES PARA ENVIAR MENSAGENS VIA Z-API
+# ==========================================================
 
 async def _send_text(phone: str, message: str) -> dict:
     """
@@ -166,9 +214,14 @@ async def _send_image_base64(
     return resp.json()
 
 
+# ==========================================================
+# ENDPOINT PARA ENVIAR (PROTEGIDO POR CHAVE SECRETA)
+# ==========================================================
+
 @router.post(
     "/enviar",
     summary="Endpoint genérico para enviar mensagem via Z-API (texto/imagem)",
+    dependencies=[Depends(validar_chave_secreta)],
 )
 async def enviar_whatsapp(
     phone: str = Form(..., description="Número no formato 5511999999999, somente dígitos"),
@@ -186,6 +239,8 @@ async def enviar_whatsapp(
     - Se tiver APENAS 'message' -> envia texto simples (/send-text)
     - Se tiver 'media' + 'message' -> envia imagem com legenda (/send-image)
     - Se tiver APENAS 'media' -> envia só a imagem (/send-image)
+
+    ⚠️ Protegido por X-Whats-Secret.
     """
 
     if not message and not media:
@@ -225,39 +280,107 @@ async def enviar_whatsapp(
 
 
 # ==========================================================
-# WEBHOOK - RECEBER MENSAGENS / EVENTOS DA Z-API
+# WEBHOOK - RECEBER DA Z-API E SALVAR NA TABELA
 # ==========================================================
 
 @router.post(
     "/webhook",
     summary="Webhook para receber eventos/mensagens da Z-API",
 )
-async def whatsapp_webhook(request: Request):
+async def whatsapp_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+):
     """
     Endpoint que a Z-API vai chamar quando chegar mensagem nova
     (URL configurada no painel da Z-API em 'Ao receber').
 
-    Por enquanto ele só:
+    Aqui ele:
     - lê o JSON enviado
     - grava no log
-    - retorna 200 OK
-
-    Depois que você ver o formato certinho do payload nos logs,
-    dá pra trocar esse handler para salvar em banco, disparar
-    outra API, responder automaticamente, etc.
+    - salva os campos principais em global.whatsapp_mensagens
+    - guarda o raw_payload completo em JSONB
     """
     try:
         body = await request.json()
     except Exception:
         body = {}
 
-    # LOG básica (vai aparecer no journalctl / logs do serviço)
     logger.info("Webhook Z-API recebido: %s", body)
 
-    # Exemplo de extração super genérica (ajuste depois que ver o payload real)
-    # from_number = body.get("phone") or body.get("from") or body.get("chatId")
-    # msg_text = body.get("message") or body.get("body")
+    # Campos principais
+    instance_id = body.get("instanceId")
+    message_id = body.get("messageId")
+    phone = body.get("phone") or body.get("chatId")
+    sender_name = body.get("senderName") or body.get("chatName")
+    chat_name = body.get("chatName")
+    status = body.get("status")
+    from_me = bool(body.get("fromMe", False))
 
-    # Aqui você faria o processamento (salvar, responder etc.)
-    # Por enquanto só devolve OK para a Z-API
-    return {"status": "ok", "recebido": True}
+    texto = None
+    text_block = body.get("text")
+    if isinstance(text_block, dict):
+        texto = text_block.get("message")
+
+    momment = None
+    momment_raw = body.get("momment")
+    if isinstance(momment_raw, (int, float)):
+        # Z-API manda em milissegundos
+        momment = datetime.fromtimestamp(momment_raw / 1000.0, tz=timezone.utc)
+
+    # Cria registro
+    mensagem = WhatsAppMensagem(
+        instance_id=instance_id,
+        message_id=message_id,
+        phone=phone or "",
+        sender_name=sender_name,
+        chat_name=chat_name,
+        texto=texto,
+        status=status,
+        from_me=from_me,
+        momment=momment,
+        raw_payload=body,
+    )
+
+    db.add(mensagem)
+    db.commit()
+    db.refresh(mensagem)
+
+    return {"status": "ok", "recebido": True, "id": mensagem.id}
+
+
+# ==========================================================
+# GET DE MENSAGENS (PROTEGIDO POR CHAVE SECRETA)
+# ==========================================================
+
+@router.get(
+    "/mensagens",
+    response_model=List[WhatsAppMensagemResponse],
+    summary="Lista mensagens recebidas/salvas (filtrando por telefone opcionalmente)",
+    dependencies=[Depends(validar_chave_secreta)],
+)
+async def listar_mensagens(
+    phone: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    """
+    Lista mensagens da tabela global.whatsapp_mensagens.
+
+    - Se `phone` for informado, filtra pelo número.
+    - Limit padrão = 50 (mais recentes primeiro).
+
+    ⚠️ Protegido por X-Whats-Secret.
+    """
+    query = db.query(WhatsAppMensagem)
+
+    if phone:
+        query = query.filter(WhatsAppMensagem.phone == phone)
+
+    mensagens = (
+        query.order_by(WhatsAppMensagem.momment.desc().nullslast())
+        .limit(limit)
+        .all()
+    )
+
+    return mensagens
