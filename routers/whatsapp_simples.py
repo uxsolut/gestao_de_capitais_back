@@ -3,6 +3,7 @@
 
 import os
 import base64
+import logging
 from typing import Optional
 
 import httpx
@@ -12,12 +13,15 @@ from fastapi import (
     File,
     UploadFile,
     HTTPException,
+    Request,
 )
 
 router = APIRouter(
     prefix="/whatsapp",
     tags=["whatsapp"],
 )
+
+logger = logging.getLogger("whatsapp_zapi")
 
 # ================================
 # VARIÁVEIS DE AMBIENTE
@@ -30,7 +34,7 @@ router = APIRouter(
 
 ZAPI_BASE_URL = os.getenv("ZAPI_BASE_URL", "https://api.z-api.io")
 ZAPI_INSTANCE_ID = os.getenv("ZAPI_INSTANCE_ID")
-ZAPI_INSTANCE_TOKEN = os.getenv("ZAPI_INSTANCE_TOKEN")  # <<-- aqui o ajuste
+ZAPI_INSTANCE_TOKEN = os.getenv("ZAPI_INSTANCE_TOKEN")  # usa o que você já tem
 ZAPI_CLIENT_TOKEN = os.getenv("ZAPI_CLIENT_TOKEN")
 
 
@@ -162,7 +166,10 @@ async def _send_image_base64(
     return resp.json()
 
 
-@router.post("/enviar", summary="Endpoint genérico para enviar mensagem via Z-API (texto/imagem)")
+@router.post(
+    "/enviar",
+    summary="Endpoint genérico para enviar mensagem via Z-API (texto/imagem)",
+)
 async def enviar_whatsapp(
     phone: str = Form(..., description="Número no formato 5511999999999, somente dígitos"),
     message: Optional[str] = Form(
@@ -215,3 +222,42 @@ async def enviar_whatsapp(
             "content_type": media.content_type,
             "zapi_response": zapi_response,
         }
+
+
+# ==========================================================
+# WEBHOOK - RECEBER MENSAGENS / EVENTOS DA Z-API
+# ==========================================================
+
+@router.post(
+    "/webhook",
+    summary="Webhook para receber eventos/mensagens da Z-API",
+)
+async def whatsapp_webhook(request: Request):
+    """
+    Endpoint que a Z-API vai chamar quando chegar mensagem nova
+    (URL configurada no painel da Z-API em 'Ao receber').
+
+    Por enquanto ele só:
+    - lê o JSON enviado
+    - grava no log
+    - retorna 200 OK
+
+    Depois que você ver o formato certinho do payload nos logs,
+    dá pra trocar esse handler para salvar em banco, disparar
+    outra API, responder automaticamente, etc.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    # LOG básica (vai aparecer no journalctl / logs do serviço)
+    logger.info("Webhook Z-API recebido: %s", body)
+
+    # Exemplo de extração super genérica (ajuste depois que ver o payload real)
+    # from_number = body.get("phone") or body.get("from") or body.get("chatId")
+    # msg_text = body.get("message") or body.get("body")
+
+    # Aqui você faria o processamento (salvar, responder etc.)
+    # Por enquanto só devolve OK para a Z-API
+    return {"status": "ok", "recebido": True}
