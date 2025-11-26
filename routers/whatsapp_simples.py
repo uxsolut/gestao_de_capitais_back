@@ -305,13 +305,13 @@ async def whatsapp_webhook(
 
 
 # ==========================================================
-# GET DE MENSAGENS (COM RAW_PAYLOAD, FILTRO PHONE/LIMIT)
+# GET DE MENSAGENS (LISTA LEVE, SEM RAW_PAYLOAD)
 # ==========================================================
 
 @router.get(
     "/mensagens",
     response_model=List[WhatsAppMensagemResponse],
-    summary="Lista mensagens (inclui raw_payload) com filtros opcionais",
+    summary="Lista mensagens recebidas/salvas (sem raw_payload)",
     dependencies=[Depends(validar_chave_secreta)],
 )
 async def listar_mensagens(
@@ -323,8 +323,7 @@ async def listar_mensagens(
     Lista mensagens da tabela global.whatsapp_mensagens.
 
     - Se `phone` for informado, filtra pelo número.
-    - `limit` define quantas mensagens (mais recentes primeiro).
-    - Inclui `raw_payload` completo.
+    - Limit padrão = 50 (mais recentes primeiro).
 
     ⚠️ Protegido por X-Whats-Secret.
     """
