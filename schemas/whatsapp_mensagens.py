@@ -17,12 +17,21 @@ class WhatsAppMensagemBase(BaseModel):
     status: Optional[str] = None
     from_me: bool = False
     momment: Optional[datetime] = None
-    raw_payload: Dict[str, Any]
 
 
 class WhatsAppMensagemResponse(WhatsAppMensagemBase):
+    """
+    Usado no GET /whatsapp/mensagens (lista leve, sem raw_payload)
+    """
     id: int
     created_at: datetime
 
     class Config:
         orm_mode = True
+
+
+class WhatsAppMensagemDetalheResponse(WhatsAppMensagemResponse):
+    """
+    Usado no GET /whatsapp/mensagens/{id} (com raw_payload completo)
+    """
+    raw_payload: Dict[str, Any]
