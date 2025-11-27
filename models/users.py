@@ -6,9 +6,11 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import relationship
 from database import Base
 
+
 class UserRole(str, enum.Enum):
     admin = "admin"
     cliente = "cliente"
+
 
 class User(Base):
     __tablename__ = "users"
@@ -35,6 +37,13 @@ class User(Base):
     carteiras     = relationship("Carteira",     back_populates="user", cascade="all, delete-orphan")
     logs          = relationship("Log",          back_populates="usuario", cascade="all, delete-orphan")
     relatorios    = relationship("Relatorio",    back_populates="user")
+
+    # NOVO: tokens de 2FA
+    two_factor_tokens = relationship(
+        "TwoFactorToken",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', tipo='{self.tipo_de_user}')>"

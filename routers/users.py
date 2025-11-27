@@ -1,17 +1,32 @@
 # routers/users.py
 # -*- coding: utf-8 -*-
 from typing import List, Optional
+from datetime import datetime, timedelta, timezone
+import secrets
+import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from jose import jwt, JWTError
 
 from database import get_db
-from models.users import User  # usa SAEnum(UserRole, name="user_role") no modelo
+from models.users import User
+from models.two_factor_tokens import TwoFactorToken
 from schemas.users import User as UserSchema, UserCreate, UserLogin
 from auth.dependencies import get_current_user
 
 # >>> use sempre o módulo único de auth <<<
-from auth.auth import gerar_hash_senha, verificar_senha, criar_token_acesso
+from auth.auth import (
+    gerar_hash_senha,
+    verificar_senha,
+    criar_token_acesso,
+    SECRET_KEY,
+    ALGORITHM,
+)
+
+# vamos reaproveitar o envio simples de texto via Z-API
+from routers.whatsapp_simples import _send_text
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -21,6 +36,20 @@ def _enum_value(v) -> Optional[str]:
     if v is None:
         return None
     return getattr(v, "value", v)
+
+
+# =============================
+# SCHEMAS PARA LOGIN 2FA
+# =============================
+
+class UserLogin2FA(BaseModel):
+    email: str
+    senha: str
+
+
+class UserLogin2FAStep2(BaseModel):
+    code: str
+    two_factor_token: str
 
 
 # ---------- CRIAR USUÁRIO ----------
@@ -51,7 +80,7 @@ def criar_user(item: UserCreate, db: Session = Depends(get_db)):
     return novo_user  # Pydantic (response_model) serializa o Enum do modelo automaticamente
 
 
-# ---------- LOGIN ----------
+# ---------- LOGIN SIMPLES (MANTIDO COMO ESTÁ) ----------
 @router.post("/login", response_model=dict)
 def login_user(item: UserLogin, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == item.email).first()
@@ -73,6 +102,215 @@ def login_user(item: UserLogin, db: Session = Depends(get_db)):
             "email": user.email,
             "cpf": user.cpf,
             # garante string no JSON mesmo que seja Enum na sessão
+            "tipo_de_user": _enum_value(user.tipo_de_user),
+        },
+    }
+
+
+# ==========================================================
+# LOGIN EM DUAS ETAPAS (2FA VIA WHATSAPP)
+# ==========================================================
+
+def _gerar_codigo_otp(tamanho: int = 6) -> str:
+    """Gera um código numérico aleatório, ex.: '123456'."""
+    return "".join(secrets.choice("0123456789") for _ in range(tamanho))
+
+
+def _hash_codigo(code: str) -> str:
+    """Hash simples do código para não salvar em texto puro."""
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+def _criar_token_2fa_jwt(user_id: int, two_factor_id: int, minutos: int = 10) -> str:
+    """
+    Cria um JWT TEMPORÁRIO apenas para a etapa de 2FA.
+    Não é o token de acesso da aplicação.
+    """
+    agora = datetime.now(timezone.utc)
+    exp = agora + timedelta(minutes=minutos)
+    payload = {
+        "sub": str(user_id),
+        "two_factor_id": int(two_factor_id),
+        "type": "2fa",
+        "iat": int(agora.timestamp()),
+        "exp": int(exp.timestamp()),
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+@router.post("/login-2fa-step1", response_model=dict)
+async def login_2fa_step1(item: UserLogin2FA, db: Session = Depends(get_db)):
+    """
+    1ª etapa do login 2FA:
+    - verifica email/senha
+    - gera código de 6 dígitos
+    - grava em global.two_factor_tokens
+    - envia o código via WhatsApp usando o telefone do usuário
+    - retorna um token temporário de 2FA (two_factor_token)
+    """
+    user = db.query(User).filter(User.email == item.email).first()
+    if not user or not verificar_senha(item.senha, user.senha):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="E-mail ou senha incorretos.",
+        )
+
+    if not user.telefone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Usuário não possui telefone cadastrado para 2FA.",
+        )
+
+    # Gera código e salva hash no banco
+    codigo = _gerar_codigo_otp()
+    agora = datetime.now(timezone.utc)
+    expires_at = agora + timedelta(minutes=5)  # validade do código
+
+    token_2fa = TwoFactorToken(
+        user_id=user.id,
+        code_hash=_hash_codigo(codigo),
+        expires_at=expires_at,
+        used=False,
+        attempts=0,
+    )
+    db.add(token_2fa)
+    db.commit()
+    db.refresh(token_2fa)
+
+    # Envia o código via WhatsApp usando a função que você já tem
+    mensagem = f"Seu código de verificação é: {codigo}"
+    await _send_text(phone=user.telefone, message=mensagem)
+
+    # Cria JWT temporário de 2FA
+    two_factor_token = _criar_token_2fa_jwt(user_id=user.id, two_factor_id=token_2fa.id, minutos=10)
+
+    return {
+        "status": "OTP_SENT",
+        "message": "Enviamos um código de verificação para o seu WhatsApp.",
+        "two_factor_token": two_factor_token,
+        # se quiser, pode retornar também alguns dados básicos do user:
+        "user": {
+            "id": user.id,
+            "nome": user.nome,
+            "email": user.email,
+            "tipo_de_user": _enum_value(user.tipo_de_user),
+        },
+    }
+
+
+@router.post("/login-2fa-step2", response_model=dict)
+def login_2fa_step2(item: UserLogin2FAStep2, db: Session = Depends(get_db)):
+    """
+    2ª etapa do login 2FA:
+    - recebe o code (digitado) e o two_factor_token
+    - valida token temporário
+    - valida código (tentativas, expiração, uso)
+    - se ok, gera o mesmo JWT final do login normal e retorna
+    """
+    # 1) Decodificar o token temporário
+    try:
+        payload = jwt.decode(item.two_factor_token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de verificação inválido ou expirado.",
+        )
+
+    if payload.get("type") != "2fa":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token informado não é de verificação em duas etapas.",
+        )
+
+    sub = payload.get("sub")
+    two_factor_id = payload.get("two_factor_id")
+
+    if not sub or two_factor_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token de verificação incompleto.",
+        )
+
+    try:
+        user_id = int(sub)
+        two_factor_id = int(two_factor_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token de verificação inválido.",
+        )
+
+    # 2) Buscar o registro na tabela global.two_factor_tokens
+    token_db = (
+        db.query(TwoFactorToken)
+        .filter(
+            TwoFactorToken.id == two_factor_id,
+            TwoFactorToken.user_id == user_id,
+        )
+        .first()
+    )
+
+    if not token_db:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Código de verificação não encontrado.",
+        )
+
+    agora = datetime.now(timezone.utc)
+
+    # 3) Validar status do token
+    if token_db.used:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Este código já foi utilizado.",
+        )
+
+    if agora > token_db.expires_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Código expirado.",
+        )
+
+    if token_db.attempts >= 5:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Número máximo de tentativas excedido.",
+        )
+
+    # 4) Atualizar tentativas e verificar hash do código
+    token_db.attempts += 1
+
+    if token_db.code_hash == _hash_codigo(item.code):
+        # código correto
+        token_db.used = True
+        db.add(token_db)
+        db.commit()
+    else:
+        db.add(token_db)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Código inválido.",
+        )
+
+    # 5) Gerar o JWT FINAL igual ao login normal
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Usuário não encontrado.",
+        )
+
+    access_token = criar_token_acesso(sub=str(user.id))
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "nome": user.nome,
+            "email": user.email,
+            "cpf": user.cpf,
             "tipo_de_user": _enum_value(user.tipo_de_user),
         },
     }
