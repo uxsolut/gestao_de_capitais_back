@@ -92,7 +92,7 @@ def create_app(mode: str = "all") -> FastAPI:
     openapi_url = "/openapi.json" if docs_enabled else None
 
     # Se ROOT_PATH=/api no .env, tudo sai sob /api (ex.: /api/empresas, /api/docs)
-    root_path = os.getenv("ROOT_PATH", "/processar-requisicao" if mode == "write" else "")
+    root_path = os.getenv("ROOT_PATH", "")
 
     app = FastAPI(
         title="Meta Trade API",
