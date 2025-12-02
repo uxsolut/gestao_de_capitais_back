@@ -187,6 +187,10 @@ def create_app(mode: str = "all") -> FastAPI:
 
     # --------- OpenAPI custom (respeita root_path nos servers) ---------
     if docs_enabled:
+        # Base externa que você quer que apareça no Swagger
+        # Ex.: /pnapi  -> URLs vão ficar /pnapi/users/login, /pnapi/api/v1/health etc.
+        EXTERNAL_BASE_PATH = os.getenv("EXTERNAL_BASE_PATH", "/pnapi")
+
         def custom_openapi():
             if app.openapi_schema:
                 return app.openapi_schema
@@ -203,11 +207,15 @@ def create_app(mode: str = "all") -> FastAPI:
                 "bearerFormat": "Opaque",
             }
             openapi_schema["security"] = [{"BearerAuth": []}]
-            openapi_schema["servers"] = [{"url": root_path or "/"}]
+
+            # Aqui é o que muda: força o Swagger a usar /pnapi como base
+            openapi_schema["servers"] = [{"url": EXTERNAL_BASE_PATH}]
+
             app.openapi_schema = openapi_schema
             return app.openapi_schema
 
         app.openapi = custom_openapi
+
 
     # Métricas
     Instrumentator().instrument(app).expose(app)
