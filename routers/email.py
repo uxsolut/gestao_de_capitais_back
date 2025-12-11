@@ -14,7 +14,10 @@ from fastapi import (
 )
 import httpx
 
-router = APIRouter()
+router = APIRouter(
+    prefix="/email",        # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<< ADICIONADO
+    tags=["email"],
+)
 
 
 def _get_env_var(name: str) -> str:
@@ -29,9 +32,8 @@ def _get_env_var(name: str) -> str:
 
 
 @router.post(
-    "/enviar",
+    "/enviar",              # << mantém apenas o /enviar
     summary="Enviar e-mail via SendGrid (texto + imagem opcional)",
-    tags=["email"],
 )
 async def enviar_email(
     # Header de segurança, igual ao do WhatsApp, mas para e-mail
@@ -65,7 +67,6 @@ async def enviar_email(
     sendgrid_api_key = _get_env_var("SENDGRID_API_KEY")
 
     # 3) Monta payload do SendGrid
-    # remetente precisa ser o mesmo sender verificado no painel
     from_email = "contato@pinacle.com.br"
     from_name = "Pinacle"
 
@@ -113,7 +114,6 @@ async def enviar_email(
         response = await client.post(url, json=payload, headers=headers)
 
     if response.status_code >= 400:
-        # Logaria aqui se tiver logger
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
