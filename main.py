@@ -46,6 +46,7 @@ from routers.miniapis import router as miniapis_router
 from routers import status_aplicacao  # status da aplicação
 from routers import page_meta as r_page_meta
 from routers import media as r_media  # <<< ADICIONADO
+from routers import email as email_router
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -160,6 +161,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_page_meta.router, tags=["Page Meta"])
         app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
         app.include_router(whatsapp_simples.router)
+        app.include_router(email_router.router)
 
     elif mode == "all":
         app.include_router(users.router)
@@ -180,6 +182,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_page_meta.router, tags=["Page Meta"])
         app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
         app.include_router(whatsapp_simples.router)
+        app.include_router(email_router.router)
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])

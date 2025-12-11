@@ -44,10 +44,8 @@ ZAPI_INSTANCE_TOKEN = os.getenv("ZAPI_INSTANCE_TOKEN")
 ZAPI_CLIENT_TOKEN = os.getenv("ZAPI_CLIENT_TOKEN")
 
 # 🔐 CHAVE SECRETA PARA USAR SUAS APIS (enviar + gets)
-WHATS_API_SECRET = os.getenv(
-    "WHATS_API_SECRET",
-    "y83!T7DtxgzfXKYB2hYkjkGJPjzev85W4E9RTZCjvc&ksE%x%o",
-)
+# 👉 AGORA SEM VALOR PADRÃO NO CÓDIGO: OBRIGATÓRIO VIR DO .env
+WHATS_API_SECRET = os.getenv("WHATS_API_SECRET")
 
 
 def _check_zapi_config():
