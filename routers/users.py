@@ -4,8 +4,9 @@ from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 import secrets
 import hashlib
+import os
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
@@ -21,14 +22,25 @@ from auth.auth import (
     gerar_hash_senha,
     verificar_senha,
     criar_token_acesso,
+    verificar_token,  # <<< NOVO (para validar cookie/session/check)
     SECRET_KEY,
     ALGORITHM,
 )
 
-# vamos reaproveitar o envio simples de texto via Z-API
 from routers.whatsapp_simples import _send_text
 
 router = APIRouter(prefix="/users", tags=["Users"])
+
+# =============================
+# COOKIE JWT (ServerMonitor)
+# =============================
+COOKIE_NAME = os.getenv("SM_COOKIE_NAME", "sm_token")
+COOKIE_PATH = os.getenv("SM_COOKIE_PATH", "/servermonitor")
+COOKIE_SAMESITE = os.getenv("SM_COOKIE_SAMESITE", "lax")  # lax|strict|none
+COOKIE_MAX_AGE_SECONDS = int(os.getenv("SM_COOKIE_MAX_AGE", str(60 * 60 * 24 * 7)))  # 7 dias
+
+# Em produção HTTPS => True. Se quiser controlar por env:
+COOKIE_SECURE = os.getenv("SM_COOKIE_SECURE", "true").lower() == "true"
 
 
 def _enum_value(v) -> Optional[str]:
@@ -36,6 +48,26 @@ def _enum_value(v) -> Optional[str]:
     if v is None:
         return None
     return getattr(v, "value", v)
+
+
+def _set_auth_cookie(resp: Response, token: str) -> None:
+    """
+    Grava o JWT final em cookie HttpOnly para o Nginx poder proteger /servermonitor
+    ANTES de carregar a página.
+    """
+    resp.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path=COOKIE_PATH,
+        max_age=COOKIE_MAX_AGE_SECONDS,
+    )
+
+
+def _clear_auth_cookie(resp: Response) -> None:
+    resp.delete_cookie(key=COOKIE_NAME, path=COOKIE_PATH)
 
 
 # =============================
@@ -70,19 +102,17 @@ def criar_user(item: UserCreate, db: Session = Depends(get_db)):
         email=item.email,
         senha=hashed_password,
         cpf=item.cpf,
-        # item.tipo_de_user é Enum (schemas) -> SQLAlchemy aceita Enum ou string.
-        # Se quiser ser explícito, converta para .value:
         tipo_de_user=_enum_value(item.tipo_de_user),
     )
     db.add(novo_user)
     db.commit()
     db.refresh(novo_user)
-    return novo_user  # Pydantic (response_model) serializa o Enum do modelo automaticamente
+    return novo_user
 
 
-# ---------- LOGIN SIMPLES (MANTIDO COMO ESTÁ) ----------
+# ---------- LOGIN SIMPLES (mantém JSON e também seta cookie HttpOnly) ----------
 @router.post("/login", response_model=dict)
-def login_user(item: UserLogin, db: Session = Depends(get_db)):
+def login_user(item: UserLogin, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == item.email).first()
     if not user or not verificar_senha(item.senha, user.senha):
         raise HTTPException(
@@ -90,8 +120,11 @@ def login_user(item: UserLogin, db: Session = Depends(get_db)):
             detail="E-mail ou senha incorretos.",
         )
 
-    # cria o JWT com a MESMA SECRET_KEY/ALGORITHM do verificador
+    # cria o JWT (type="access" no seu auth/auth.py)
     access_token = criar_token_acesso(sub=str(user.id))
+
+    # >>> NOVO: seta cookie para proteger /servermonitor
+    _set_auth_cookie(response, access_token)
 
     return {
         "access_token": access_token,
@@ -101,7 +134,6 @@ def login_user(item: UserLogin, db: Session = Depends(get_db)):
             "nome": user.nome,
             "email": user.email,
             "cpf": user.cpf,
-            # garante string no JSON mesmo que seja Enum na sessão
             "tipo_de_user": _enum_value(user.tipo_de_user),
         },
     }
@@ -161,10 +193,9 @@ async def login_2fa_step1(item: UserLogin2FA, db: Session = Depends(get_db)):
             detail="Usuário não possui telefone cadastrado para 2FA.",
         )
 
-    # Gera código e salva hash no banco
     codigo = _gerar_codigo_otp()
     agora = datetime.now(timezone.utc)
-    expires_at = agora + timedelta(minutes=5)  # validade do código
+    expires_at = agora + timedelta(minutes=5)
 
     token_2fa = TwoFactorToken(
         user_id=user.id,
@@ -177,18 +208,19 @@ async def login_2fa_step1(item: UserLogin2FA, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(token_2fa)
 
-    # Envia o código via WhatsApp usando a função que você já tem
     mensagem = f"Seu código de verificação é: {codigo}"
     await _send_text(phone=user.telefone, message=mensagem)
 
-    # Cria JWT temporário de 2FA
-    two_factor_token = _criar_token_2fa_jwt(user_id=user.id, two_factor_id=token_2fa.id, minutos=10)
+    two_factor_token = _criar_token_2fa_jwt(
+        user_id=user.id,
+        two_factor_id=token_2fa.id,
+        minutos=10,
+    )
 
     return {
         "status": "OTP_SENT",
         "message": "Enviamos um código de verificação para o seu WhatsApp.",
         "two_factor_token": two_factor_token,
-        # se quiser, pode retornar também alguns dados básicos do user:
         "user": {
             "id": user.id,
             "nome": user.nome,
@@ -199,7 +231,7 @@ async def login_2fa_step1(item: UserLogin2FA, db: Session = Depends(get_db)):
 
 
 @router.post("/login-2fa-step2", response_model=dict)
-def login_2fa_step2(item: UserLogin2FAStep2, db: Session = Depends(get_db)):
+def login_2fa_step2(item: UserLogin2FAStep2, response: Response, db: Session = Depends(get_db)):
     """
     2ª etapa do login 2FA:
     - recebe o code (digitado) e o two_factor_token
@@ -240,7 +272,6 @@ def login_2fa_step2(item: UserLogin2FAStep2, db: Session = Depends(get_db)):
             detail="Token de verificação inválido.",
         )
 
-    # 2) Buscar o registro na tabela global.two_factor_tokens
     token_db = (
         db.query(TwoFactorToken)
         .filter(
@@ -258,42 +289,26 @@ def login_2fa_step2(item: UserLogin2FAStep2, db: Session = Depends(get_db)):
 
     agora = datetime.now(timezone.utc)
 
-    # 3) Validar status do token
     if token_db.used:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Este código já foi utilizado.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Este código já foi utilizado.")
 
     if agora > token_db.expires_at:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Código expirado.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Código expirado.")
 
     if token_db.attempts >= 5:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Número máximo de tentativas excedido.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Número máximo de tentativas excedido.")
 
-    # 4) Atualizar tentativas e verificar hash do código
     token_db.attempts += 1
 
     if token_db.code_hash == _hash_codigo(item.code):
-        # código correto
         token_db.used = True
         db.add(token_db)
         db.commit()
     else:
         db.add(token_db)
         db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Código inválido.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Código inválido.")
 
-    # 5) Gerar o JWT FINAL igual ao login normal
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
@@ -302,6 +317,9 @@ def login_2fa_step2(item: UserLogin2FAStep2, db: Session = Depends(get_db)):
         )
 
     access_token = criar_token_acesso(sub=str(user.id))
+
+    # >>> NOVO: seta cookie para proteger /servermonitor
+    _set_auth_cookie(response, access_token)
 
     return {
         "access_token": access_token,
@@ -314,6 +332,27 @@ def login_2fa_step2(item: UserLogin2FAStep2, db: Session = Depends(get_db)):
             "tipo_de_user": _enum_value(user.tipo_de_user),
         },
     }
+
+
+# =============================
+# CHECK DE SESSÃO (para Nginx auth_request)
+# =============================
+@router.get("/session/check", response_model=dict)
+def session_check(request: Request) -> dict:
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="Sem sessão.")
+
+    # Usa seu verificador: garante type=access, exp ok, etc.
+    verificar_token(token)
+
+    return {"ok": True}
+
+
+@router.post("/logout", response_model=dict)
+def logout(response: Response) -> dict:
+    _clear_auth_cookie(response)
+    return {"ok": True}
 
 
 # ---------- LISTAR USUÁRIOS ----------
