@@ -36,6 +36,8 @@ from routers import (
     health,
     fullstack,
     whatsapp_simples,
+    assinaturas,
+    contatos,
 )
 from routers import aplicacoes  # router de Aplicações
 from routers import tipo_de_ordem as r_tipo_de_ordem
@@ -162,6 +164,8 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
         app.include_router(whatsapp_simples.router)
         app.include_router(email_router.router)
+        app.include_router(assinaturas.router)
+        app.include_router(contatos.router)
 
     elif mode == "all":
         app.include_router(users.router)
@@ -183,6 +187,8 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(r_media.router, tags=["Media"])  # <<< ADICIONADO
         app.include_router(whatsapp_simples.router)
         app.include_router(email_router.router)
+        app.include_router(assinaturas.router)
+        app.include_router(contatos.router)
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
