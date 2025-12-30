@@ -1,9 +1,11 @@
 # schemas/contatos.py
 from datetime import datetime
+from typing import Optional
+from uuid import UUID
+
 from pydantic import BaseModel, EmailStr, Field
 
 
-# ---------- Assinaturas ----------
 class AssinaturaCreate(BaseModel):
     nome: str = Field(min_length=2, max_length=120)
     user_id: int
@@ -19,13 +21,12 @@ class AssinaturaOut(BaseModel):
         from_attributes = True
 
 
-# ---------- Contatos ----------
 class ContatoCreate(BaseModel):
     user_id: int
-    assinatura_id: int
     nome: str = Field(min_length=2, max_length=160)
     telefone: str = Field(min_length=8, max_length=30)
     email: EmailStr
+    assinatura_id: int
 
 
 class ContatoOut(BaseModel):
@@ -42,15 +43,25 @@ class ContatoOut(BaseModel):
         from_attributes = True
 
 
-# ---------- Fluxo código ----------
+# ===== Fluxo: "Existe contato" (Step 1) =====
+class ExisteContatoRequest(BaseModel):
+    email: EmailStr
+
+
 class ExisteContatoResponse(BaseModel):
     exists: bool
-    challenge_token: str | None = None
-    expires_at: datetime | None = None
+    challenge_token: Optional[UUID] = None
+    expires_at: Optional[datetime] = None
+
+
+# ===== Fluxo: "Validar código" (Step 2) =====
+class ValidarCodigoRequest(BaseModel):
+    challenge_token: UUID
+    code: str = Field(min_length=4, max_length=12)
 
 
 class ValidarCodigoResponse(BaseModel):
     ok: bool
-    jwt: str | None = None
+    jwt: Optional[str] = None
     token_type: str = "bearer"
-    expires_minutes: int | None = None
+    expires_minutes: Optional[int] = None

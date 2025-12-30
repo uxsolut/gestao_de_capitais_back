@@ -1,5 +1,6 @@
 # routers/contatos.py
 from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -7,7 +8,14 @@ from sqlalchemy import text
 
 from database import get_db
 from models.contatos import Assinatura, Contato, ContatoCodigo
-from schemas.contatos import ContatoCreate, ContatoOut, ExisteContatoResponse, ValidarCodigoResponse
+from schemas.contatos import (
+    ContatoCreate,
+    ContatoOut,
+    ExisteContatoResponse,
+    ExisteContatoRequest,
+    ValidarCodigoRequest,
+    ValidarCodigoResponse,
+)
 from services.contatos_service import (
     generate_access_code,
     hash_code,
@@ -20,29 +28,38 @@ from services.contatos_service import (
 router = APIRouter(prefix="/api/contatos", tags=["Contatos"])
 
 
+def _norm_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
 @router.post("", response_model=ContatoOut)
 def criar_contato(payload: ContatoCreate, db: Session = Depends(get_db)):
     # valida user existe
-    row = db.execute(text("SELECT id FROM global.users WHERE id = :id"), {"id": payload.user_id}).fetchone()
+    row = db.execute(
+        text("SELECT id FROM global.users WHERE id = :id"),
+        {"id": int(payload.user_id)},
+    ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="User não encontrado")
 
     # valida assinatura existe
-    assinatura = db.query(Assinatura).filter(Assinatura.id == payload.assinatura_id).first()
+    assinatura = db.query(Assinatura).filter(Assinatura.id == int(payload.assinatura_id)).first()
     if not assinatura:
         raise HTTPException(status_code=404, detail="Assinatura não encontrada")
 
+    email_norm = _norm_email(str(payload.email))
+
     # email único
-    ja = db.query(Contato).filter(Contato.email == str(payload.email)).first()
+    ja = db.query(Contato).filter(Contato.email == email_norm).first()
     if ja:
         raise HTTPException(status_code=409, detail="Já existe contato com esse e-mail")
 
     contato = Contato(
-        user_id=payload.user_id,
-        assinatura_id=payload.assinatura_id,
-        nome=payload.nome,
-        telefone=payload.telefone,
-        email=str(payload.email),
+        user_id=int(payload.user_id),
+        assinatura_id=int(payload.assinatura_id),
+        nome=(payload.nome or "").strip(),
+        telefone=(payload.telefone or "").strip(),
+        email=email_norm,
         supervisor=False,  # ✅ SEMPRE false automático
     )
     db.add(contato)
@@ -59,15 +76,15 @@ def listar_contatos(
 ):
     q = db.query(Contato).order_by(Contato.id.desc())
     if user_id is not None:
-        q = q.filter(Contato.user_id == user_id)
+        q = q.filter(Contato.user_id == int(user_id))
     if assinatura_id is not None:
-        q = q.filter(Contato.assinatura_id == assinatura_id)
+        q = q.filter(Contato.assinatura_id == int(assinatura_id))
     return q.all()
 
 
 @router.delete("/{contato_id}")
 def excluir_contato(contato_id: int, db: Session = Depends(get_db)):
-    contato = db.query(Contato).filter(Contato.id == contato_id).first()
+    contato = db.query(Contato).filter(Contato.id == int(contato_id)).first()
     if not contato:
         raise HTTPException(status_code=404, detail="Contato não encontrado")
 
@@ -79,15 +96,22 @@ def excluir_contato(contato_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# -------- Step 1: existe contato + envia código (WhatsApp) --------
 @router.get("/existe", response_model=ExisteContatoResponse)
 def existe_contato(email: str = Query(...), db: Session = Depends(get_db)):
-    contato = db.query(Contato).filter(Contato.email == email).first()
+    email_norm = _norm_email(email)
+
+    contato = db.query(Contato).filter(Contato.email == email_norm).first()
     if not contato:
         return ExisteContatoResponse(exists=False)
 
     # limpa expirados do contato
     now = datetime.now(timezone.utc)
-    expirados = db.query(ContatoCodigo).filter(ContatoCodigo.contato_id == contato.id, ContatoCodigo.expires_at < now).all()
+    expirados = (
+        db.query(ContatoCodigo)
+        .filter(ContatoCodigo.contato_id == contato.id, ContatoCodigo.expires_at < now)
+        .all()
+    )
     for item in expirados:
         db.delete(item)
     if expirados:
@@ -104,19 +128,20 @@ def existe_contato(email: str = Query(...), db: Session = Depends(get_db)):
     db.commit()
     db.refresh(desafio)
 
-    # envia (por enquanto print; depois ligamos no seu envio real)
+    # envia (por enquanto print; depois liga no seu envio real)
     send_access_code_whatsapp(contato.telefone, code)
 
-    return ExisteContatoResponse(exists=True, challenge_token=str(desafio.id), expires_at=desafio.expires_at)
+    # ✅ retorna UUID (não string)
+    return ExisteContatoResponse(exists=True, challenge_token=desafio.id, expires_at=desafio.expires_at)
 
 
-@router.get("/validar-codigo", response_model=ValidarCodigoResponse)
-def validar_codigo(
-    challenge_token: str = Query(...),
-    code: str = Query(..., min_length=4, max_length=10),
-    db: Session = Depends(get_db),
-):
-    desafio = db.query(ContatoCodigo).filter(text("id::text = :id")).params(id=challenge_token).first()
+# -------- Step 2: validar código + liberar JWT --------
+@router.post("/validar-codigo", response_model=ValidarCodigoResponse)
+def validar_codigo(payload: ValidarCodigoRequest, db: Session = Depends(get_db)):
+    # garante UUID válido já no parse do pydantic
+    challenge_token: UUID = payload.challenge_token
+
+    desafio = db.query(ContatoCodigo).filter(ContatoCodigo.id == challenge_token).first()
     if not desafio:
         raise HTTPException(status_code=404, detail="Challenge inválido")
 
@@ -126,7 +151,7 @@ def validar_codigo(
         db.commit()
         raise HTTPException(status_code=401, detail="Código expirado")
 
-    if hash_code(code) != desafio.code_hash:
+    if hash_code(payload.code) != desafio.code_hash:
         raise HTTPException(status_code=401, detail="Código inválido")
 
     contato = db.query(Contato).filter(Contato.id == desafio.contato_id).first()
@@ -135,17 +160,19 @@ def validar_codigo(
         db.commit()
         raise HTTPException(status_code=404, detail="Contato não encontrado")
 
-    # ✅ validou -> apaga o código (como você pediu)
+    # ✅ validou -> apaga o código
     db.delete(desafio)
     db.commit()
 
     token = create_contacts_jwt(
-        sub=str(contato.id),
+        sub=contato.id,  # service já força str()
         extra={
             "email": contato.email,
             "assinatura_id": contato.assinatura_id,
             "supervisor": contato.supervisor,
             "user_id": contato.user_id,
+            "tipo": "contato",
         },
     )
+
     return ValidarCodigoResponse(ok=True, jwt=token, expires_minutes=jwt_exp_minutes())
