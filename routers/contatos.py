@@ -2,18 +2,17 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from config import settings
 from database import get_db
 from models.contatos import Assinatura, Contato, ContatoCodigo
 from schemas.contatos import (
     ContatoCreate,
     ContatoOut,
     ExisteContatoResponse,
+    ExisteContatoRequest,
     ValidarCodigoRequest,
     ValidarCodigoResponse,
 )
@@ -23,47 +22,14 @@ from services.contatos_service import (
     access_code_expires_at,
     create_contacts_jwt,
     jwt_exp_minutes,
+    send_access_code_whatsapp,
 )
 
-router = APIRouter(prefix="/contatos", tags=["Contatos"])
+router = APIRouter(prefix="/api/contatos", tags=["Contatos"])
 
 
 def _norm_email(email: str) -> str:
     return (email or "").strip().lower()
-
-
-def _only_digits(phone: str) -> str:
-    return "".join(ch for ch in (phone or "") if ch.isdigit())
-
-
-def _enviar_codigo_whatsapp(phone: str, code: str) -> None:
-    secret = getattr(settings, "WHATSAPP_SECRET", None) or getattr(settings, "WHATS_SECRET", None)
-    send_url = getattr(settings, "WHATSAPP_SEND_URL", None)
-
-    if not secret:
-        raise HTTPException(status_code=500, detail="WHATSAPP_SECRET não configurado no .env")
-    if not send_url:
-        raise HTTPException(status_code=500, detail="WHATSAPP_SEND_URL não configurado no .env")
-
-    phone_digits = _only_digits(phone)
-    if not phone_digits:
-        raise HTTPException(status_code=400, detail="Telefone do contato inválido (sem dígitos)")
-
-    message = f"Seu código de acesso é: {code}"
-
-    headers = {"X-Whats-Secret": secret}
-    files = {
-        "phone": (None, phone_digits),
-        "message": (None, message),
-    }
-
-    try:
-        resp = requests.post(send_url, headers=headers, files=files, timeout=20)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Falha ao chamar WhatsApp: {e}")
-
-    if resp.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"WhatsApp retornou {resp.status_code}: {resp.text[:300]}")
 
 
 @router.post("", response_model=ContatoOut)
@@ -130,7 +96,7 @@ def excluir_contato(contato_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-# Step 1: existe contato + envia código
+# -------- Step 1: existe contato + envia código (WhatsApp) --------
 @router.get("/existe", response_model=ExisteContatoResponse)
 def existe_contato(email: str = Query(...), db: Session = Depends(get_db)):
     email_norm = _norm_email(email)
@@ -162,15 +128,17 @@ def existe_contato(email: str = Query(...), db: Session = Depends(get_db)):
     db.commit()
     db.refresh(desafio)
 
-    # ✅ envia WhatsApp aqui mesmo (sem service)
-    _enviar_codigo_whatsapp(contato.telefone, code)
+    # envia (por enquanto print; depois liga no seu envio real)
+    send_access_code_whatsapp(contato.telefone, code)
 
+    # ✅ retorna UUID (não string)
     return ExisteContatoResponse(exists=True, challenge_token=desafio.id, expires_at=desafio.expires_at)
 
 
-# Step 2: validar código + liberar JWT
+# -------- Step 2: validar código + liberar JWT --------
 @router.post("/validar-codigo", response_model=ValidarCodigoResponse)
 def validar_codigo(payload: ValidarCodigoRequest, db: Session = Depends(get_db)):
+    # garante UUID válido já no parse do pydantic
     challenge_token: UUID = payload.challenge_token
 
     desafio = db.query(ContatoCodigo).filter(ContatoCodigo.id == challenge_token).first()
@@ -192,11 +160,12 @@ def validar_codigo(payload: ValidarCodigoRequest, db: Session = Depends(get_db))
         db.commit()
         raise HTTPException(status_code=404, detail="Contato não encontrado")
 
+    # ✅ validou -> apaga o código
     db.delete(desafio)
     db.commit()
 
     token = create_contacts_jwt(
-        sub=contato.id,
+        sub=contato.id,  # service já força str()
         extra={
             "email": contato.email,
             "assinatura_id": contato.assinatura_id,
