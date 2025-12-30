@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field
 
 
+# ---------- Assinaturas ----------
 class AssinaturaCreate(BaseModel):
     nome: str = Field(min_length=2, max_length=120)
     user_id: int
@@ -18,12 +19,13 @@ class AssinaturaOut(BaseModel):
         from_attributes = True
 
 
+# ---------- Contatos ----------
 class ContatoCreate(BaseModel):
     user_id: int
+    assinatura_id: int
     nome: str = Field(min_length=2, max_length=160)
     telefone: str = Field(min_length=8, max_length=30)
     email: EmailStr
-    assinatura_id: int
 
 
 class ContatoOut(BaseModel):
@@ -40,6 +42,7 @@ class ContatoOut(BaseModel):
         from_attributes = True
 
 
+# ---------- Fluxo código ----------
 class ExisteContatoResponse(BaseModel):
     exists: bool
     challenge_token: str | None = None

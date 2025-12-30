@@ -1,6 +1,16 @@
 # models/contatos.py
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
+
 from database import Base
 
 
@@ -10,7 +20,13 @@ class Assinatura(Base):
 
     id = Column(BigInteger, primary_key=True, index=True)
     nome = Column(String(120), nullable=False)
-    user_id = Column(BigInteger, ForeignKey("global.users.id", ondelete="RESTRICT", onupdate="CASCADE"), nullable=False)
+
+    user_id = Column(
+        BigInteger,
+        ForeignKey("global.users.id", ondelete="RESTRICT", onupdate="CASCADE"),
+        nullable=False,
+        index=True,
+    )
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -24,16 +40,25 @@ class Contato(Base):
 
     id = Column(BigInteger, primary_key=True, index=True)
 
-    user_id = Column(BigInteger, ForeignKey("global.users.id", ondelete="RESTRICT", onupdate="CASCADE"), nullable=False)
+    user_id = Column(
+        BigInteger,
+        ForeignKey("global.users.id", ondelete="RESTRICT", onupdate="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
     assinatura_id = Column(
-        BigInteger, ForeignKey("global.assinaturas.id", ondelete="RESTRICT", onupdate="CASCADE"), nullable=False
+        BigInteger,
+        ForeignKey("global.assinaturas.id", ondelete="RESTRICT", onupdate="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     nome = Column(String(160), nullable=False)
     telefone = Column(String(30), nullable=False)
     email = Column(String(180), nullable=False, index=True)
 
-    supervisor = Column(Boolean, nullable=False, server_default="false", default=False)
+    supervisor = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
@@ -42,8 +67,14 @@ class ContatoCodigo(Base):
     __table_args__ = {"schema": "global"}
 
     id = Column(UUID(as_uuid=True), primary_key=True, index=True)
-    contato_id = Column(BigInteger, ForeignKey("global.contatos.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
 
-    code_hash = Column(String(64), nullable=False)  # sha256 hex (64)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
+    contato_id = Column(
+        BigInteger,
+        ForeignKey("global.contatos.id", ondelete="CASCADE", onupdate="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    code_hash = Column(String(64), nullable=False)  # sha256 hex = 64 chars
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
