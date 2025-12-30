@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     SYSTEM_TOKEN_NAMESPACE: str = os.getenv("SYSTEM_TOKEN_NAMESPACE", "sys:tok")
     OPAQUE_TOKEN_NAMESPACE: str = os.getenv("OPAQUE_TOKEN_NAMESPACE", "tok")
 
+    # ==================== WhatsApp (env) ==================== #
+    # usado pelo contatos_service.py para chamar seu endpoint interno /whatsapp/enviar
+    WHATSAPP_SECRET: Optional[str] = os.getenv("WHATSAPP_SECRET")
+    WHATS_SECRET: Optional[str] = os.getenv("WHATS_SECRET")  # alias (se você usar esse nome)
+    WHATSAPP_SEND_URL: Optional[str] = os.getenv("WHATSAPP_SEND_URL")
+
     # ==================== Banco de Dados (PostgreSQL) ==================== #
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/dbname")
 
@@ -100,7 +106,6 @@ class Settings(BaseSettings):
     ]
 
     # ==================== Deploy de Páginas (opcional) ==================== #
-    # Estes campos apareceram no log como “extra inputs”. Incluí para compat.
     BASE_UPLOADS_DIR: Optional[str] = os.getenv("BASE_UPLOADS_DIR")
     BASE_UPLOADS_URL: Optional[str] = os.getenv("BASE_UPLOADS_URL")
 
@@ -135,6 +140,15 @@ class Settings(BaseSettings):
     @property
     def algorithm(self) -> str:
         return self.ALGORITHM
+
+    # ✅ aliases minúsculos pro WhatsApp (opcional, mas ajuda)
+    @property
+    def whatsapp_secret(self) -> Optional[str]:
+        return self.WHATSAPP_SECRET or self.WHATS_SECRET
+
+    @property
+    def whatsapp_send_url(self) -> Optional[str]:
+        return self.WHATSAPP_SEND_URL
 
     # aliases para os campos de páginas
     @property
@@ -172,7 +186,6 @@ class Settings(BaseSettings):
     # ---------- Aliases esperados pelo middleware ---------- #
     @property
     def is_development(self) -> bool:
-        # considera dev se ENVIRONMENT=development OU DEBUG=True
         return self.ENVIRONMENT.lower() == "development" or self.DEBUG is True
 
     @property
@@ -181,12 +194,11 @@ class Settings(BaseSettings):
 
     # ---------- Config Pydantic v2 ---------- #
     model_config = SettingsConfigDict(
-        env_file="/opt/app/api/.env",      # ajuste se seu .env estiver em outro lugar
+        env_file="/opt/app/api/.env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore",                    # <- chave para não quebrar com variáveis extras
+        extra="ignore",
     )
 
 
-# Instância global
 settings = Settings()
