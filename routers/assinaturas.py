@@ -7,7 +7,7 @@ from database import get_db
 from models.contatos import Assinatura
 from schemas.contatos import AssinaturaCreate, AssinaturaOut
 
-router = APIRouter(prefix="/api/assinaturas", tags=["Assinaturas"])
+router = APIRouter(prefix="/assinaturas", tags=["Assinaturas"])
 
 
 @router.post("", response_model=AssinaturaOut)
@@ -29,15 +29,12 @@ def criar_assinatura(payload: AssinaturaCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(assinatura)
 
-    # === OPCIONAL: vincular assinatura atual ao user ===
-    # Se você quer que o user "tenha" uma assinatura ativa, mantém.
-    # Se NÃO quer isso, pode apagar este bloco.
+    # opcional: grava assinatura atual no user
     db.execute(
         text("UPDATE global.users SET assinatura_id = :aid WHERE id = :uid"),
         {"aid": int(assinatura.id), "uid": int(payload.user_id)},
     )
     db.commit()
-    # ================================================
 
     return assinatura
 

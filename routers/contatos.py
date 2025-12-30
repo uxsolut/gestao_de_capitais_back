@@ -12,7 +12,6 @@ from schemas.contatos import (
     ContatoCreate,
     ContatoOut,
     ExisteContatoResponse,
-    ExisteContatoRequest,
     ValidarCodigoRequest,
     ValidarCodigoResponse,
 )
@@ -25,7 +24,7 @@ from services.contatos_service import (
     send_access_code_whatsapp,
 )
 
-router = APIRouter(prefix="/api/contatos", tags=["Contatos"])
+router = APIRouter(prefix="/contatos", tags=["Contatos"])
 
 
 def _norm_email(email: str) -> str:
@@ -96,7 +95,7 @@ def excluir_contato(contato_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-# -------- Step 1: existe contato + envia código (WhatsApp) --------
+# Step 1: existe contato + envia código
 @router.get("/existe", response_model=ExisteContatoResponse)
 def existe_contato(email: str = Query(...), db: Session = Depends(get_db)):
     email_norm = _norm_email(email)
@@ -128,17 +127,14 @@ def existe_contato(email: str = Query(...), db: Session = Depends(get_db)):
     db.commit()
     db.refresh(desafio)
 
-    # envia (por enquanto print; depois liga no seu envio real)
     send_access_code_whatsapp(contato.telefone, code)
 
-    # ✅ retorna UUID (não string)
     return ExisteContatoResponse(exists=True, challenge_token=desafio.id, expires_at=desafio.expires_at)
 
 
-# -------- Step 2: validar código + liberar JWT --------
+# Step 2: validar código + liberar JWT
 @router.post("/validar-codigo", response_model=ValidarCodigoResponse)
 def validar_codigo(payload: ValidarCodigoRequest, db: Session = Depends(get_db)):
-    # garante UUID válido já no parse do pydantic
     challenge_token: UUID = payload.challenge_token
 
     desafio = db.query(ContatoCodigo).filter(ContatoCodigo.id == challenge_token).first()
@@ -160,12 +156,11 @@ def validar_codigo(payload: ValidarCodigoRequest, db: Session = Depends(get_db))
         db.commit()
         raise HTTPException(status_code=404, detail="Contato não encontrado")
 
-    # ✅ validou -> apaga o código
     db.delete(desafio)
     db.commit()
 
     token = create_contacts_jwt(
-        sub=contato.id,  # service já força str()
+        sub=contato.id,
         extra={
             "email": contato.email,
             "assinatura_id": contato.assinatura_id,
