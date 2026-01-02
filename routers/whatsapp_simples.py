@@ -44,8 +44,12 @@ ZAPI_INSTANCE_TOKEN = os.getenv("ZAPI_INSTANCE_TOKEN")
 ZAPI_CLIENT_TOKEN = os.getenv("ZAPI_CLIENT_TOKEN")
 
 # 🔐 CHAVE SECRETA PARA USAR SUAS APIS (enviar + gets)
-# 👉 AGORA SEM VALOR PADRÃO NO CÓDIGO: OBRIGATÓRIO VIR DO .env
+# 👉 OBRIGATÓRIO VIR DO .env
 WHATS_API_SECRET = os.getenv("WHATS_API_SECRET")
+
+# 🔐 TOKEN SECRETO PARA O WEBHOOK (recebimento da Z-API)
+# 👉 OBRIGATÓRIO VIR DO .env
+WHATSAPP_WEBHOOK_TOKEN = os.getenv("WHATSAPP_WEBHOOK_TOKEN")
 
 
 def _check_zapi_config():
@@ -68,7 +72,7 @@ def _check_zapi_config():
 
 
 # ==========================================================
-# AUTENTICAÇÃO POR CHAVE SECRETA
+# AUTENTICAÇÃO POR CHAVE SECRETA (PARA ENVIAR + GETs)
 # ==========================================================
 
 async def validar_chave_secreta(
@@ -88,6 +92,30 @@ async def validar_chave_secreta(
         raise HTTPException(
             status_code=401,
             detail="Não autorizado: chave secreta inválida.",
+        )
+
+
+# ==========================================================
+# AUTENTICAÇÃO DO WEBHOOK (RECEBIMENTO)
+# ==========================================================
+
+async def validar_webhook_token(
+    x_webhook_token: str = Header(
+        ...,
+        alias="X-Webhook-Token",
+        description="Token secreto para autenticar chamadas do webhook",
+    ),
+):
+    if not WHATSAPP_WEBHOOK_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="WHATSAPP_WEBHOOK_TOKEN não configurado no servidor.",
+        )
+
+    if x_webhook_token != WHATSAPP_WEBHOOK_TOKEN:
+        raise HTTPException(
+            status_code=401,
+            detail="Não autorizado: webhook token inválido.",
         )
 
 
@@ -246,27 +274,40 @@ async def enviar_whatsapp(
 
 
 # ==========================================================
-# WEBHOOK - RECEBER DA Z-API E SALVAR NA TABELA
+# WEBHOOK - RECEBER DA Z-API E SALVAR NA TABELA (AGORA SEGURO)
 # ==========================================================
 
 @router.post(
     "/webhook",
     summary="Webhook para receber eventos/mensagens da Z-API",
+    dependencies=[Depends(validar_webhook_token)],
 )
 async def whatsapp_webhook(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    # 1) Ler JSON
     try:
         body = await request.json()
     except Exception:
-        body = {}
+        raise HTTPException(status_code=400, detail="Payload inválido: não é JSON.")
+
+    # 2) Bloquear payload vazio / formato errado
+    if not isinstance(body, dict) or not body:
+        raise HTTPException(status_code=400, detail="Payload inválido: vazio.")
 
     logger.info("Webhook Z-API recebido: %s", body)
 
-    instance_id = body.get("instanceId")
+    # 3) Validação mínima (evita salvar lixo no banco)
     message_id = body.get("messageId")
     phone = body.get("phone") or body.get("chatId")
+
+    if not message_id:
+        raise HTTPException(status_code=400, detail="Payload inválido: messageId ausente.")
+    if not phone:
+        raise HTTPException(status_code=400, detail="Payload inválido: phone/chatId ausente.")
+
+    instance_id = body.get("instanceId")
     sender_name = body.get("senderName") or body.get("chatName")
     chat_name = body.get("chatName")
     status = body.get("status")
@@ -285,7 +326,7 @@ async def whatsapp_webhook(
     mensagem = WhatsAppMensagem(
         instance_id=instance_id,
         message_id=message_id,
-        phone=phone or "",
+        phone=phone,
         sender_name=sender_name,
         chat_name=chat_name,
         texto=texto,
