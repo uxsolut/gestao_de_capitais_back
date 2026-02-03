@@ -32,7 +32,8 @@ def _find_free_port() -> int:
     for p in range(PORT_START, PORT_END + 1):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
-                s.bind(("127.0.0.1", p))
+                s.bind(("0.0.0.0", p))
+                s.close()
                 return p
             except OSError:
                 continue
@@ -219,7 +220,7 @@ def criar_miniapi(
     rota_db = f"/miniapi/{nome}"
     rota_publica = f"/miniapi/{nome}/get"  # tipo_api padrão: get
 
-    # 3) Porta aleatória
+    # 3) Porta aleatória - IMPORTANTE: alocar ANTES de tudo
     porta = _find_free_port()
 
     # 4) Extrai release definitivo e prepara app
@@ -249,7 +250,7 @@ def criar_miniapi(
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha ao instalar dependências: {e}")
 
-    # deploy (systemd + nginx)
+    # deploy (systemd + nginx) - PASSA A PORTA ALOCADA
     try:
         _deploy_root(nome, porta, rota_publica, os.path.join(cur_link, "app"))
     except subprocess.CalledProcessError as e:
