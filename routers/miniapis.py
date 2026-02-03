@@ -20,8 +20,8 @@ PORT_START = int(os.getenv("MINIAPIS_PORT_START", "9200"))
 PORT_END   = int(os.getenv("MINIAPIS_PORT_END",   "9699"))
 
 # Host/base para montar a URL pública
-FIXED_DEPLOY_DOMAIN = os.getenv("FIXED_DEPLOY_DOMAIN", "pinacle.com.br")
-PUBLIC_SCHEME = os.getenv("PUBLIC_SCHEME", "https")
+FIXED_DEPLOY_DOMAIN = "pinacle.com.br"  # Sempre pinacle.com.br (o IP fica escondido atrás do Nginx)
+PUBLIC_SCHEME = "https"  # Sempre HTTPS
 
 def _ensure_dirs():
     """Garante que diretório base existe"""
