@@ -20,8 +20,8 @@ PORT_START = int(os.getenv("MINIAPIS_PORT_START", "9200"))
 PORT_END   = int(os.getenv("MINIAPIS_PORT_END",   "9699"))
 
 # Host/base para montar a URL pública
-FIXED_DEPLOY_DOMAIN = "pinacle.com.br"  # Sempre pinacle.com.br (o IP fica escondido atrás do Nginx)
-PUBLIC_SCHEME = "https"  # Sempre HTTPS
+FIXED_DEPLOY_DOMAIN = "pinacle.com.br"
+PUBLIC_SCHEME = "https"
 
 def _ensure_dirs():
     """Garante que diretório base existe"""
@@ -105,11 +105,11 @@ def _venv_install(app_dir: str):
         pip = os.path.join(venv_dir, "bin", "pip")
         subprocess.run([pip, "install", "fastapi", "uvicorn"], check=True)
 
-def _deploy_root(api_name: str, port: int, route_with_tipo: str, workdir_app: str):
+def _deploy_root(api_name: str, port: int, route: str, workdir_app: str):
     """
     Chama script de deploy com nome da API
     """
-    subprocess.run(["sudo", DEPLOY_BIN, api_name, str(port), route_with_tipo, workdir_app, RUNUSER], check=True)
+    subprocess.run(["sudo", DEPLOY_BIN, api_name, str(port), route, workdir_app, RUNUSER], check=True)
 
 class MiniApiOut(BaseModel):
     """Modelo de resposta para criação de mini-API"""
@@ -137,14 +137,13 @@ def _insert_backend_row_initial(
               (:front_ou_back, :dominio, :slug, :arquivo_zip, NULL,
                NULL, NULL, false, NULL,
                NULL, NULL,
-               NULL, NULL, NULL, CAST(:tipo_api AS "global".tipo_api_enum))
+               NULL, NULL, NULL, NULL)
             RETURNING id
         """), {
             "front_ou_back": "backend",
             "dominio": None,
             "slug": slug,
             "arquivo_zip": arquivo_zip_bytes,
-            "tipo_api": "get",
         })
         return res.scalar_one()
 
@@ -216,11 +215,10 @@ def criar_miniapi(
         arquivo_zip_bytes=zip_bytes,
     )
 
-    # 2) Rota (com nome da API)
+    # 2) Rota SEM /get - apenas /miniapi/{nome}
     rota_db = f"/miniapi/{nome}"
-    rota_publica = f"/miniapi/{nome}/get"  # tipo_api padrão: get
 
-    # 3) Porta aleatória - IMPORTANTE: alocar ANTES de tudo
+    # 3) Porta aleatória
     porta = _find_free_port()
 
     # 4) Extrai release definitivo e prepara app
@@ -240,24 +238,23 @@ def criar_miniapi(
         if os.path.exists(maybe_main):
             os.makedirs(app_dir, exist_ok=True)
             shutil.move(maybe_main, main_py)
-        # Não falha se não encontrar - pode ser outro tipo de backend
 
     _symlink_force(cur_link, release_dir)
 
-    # venv + deps (suporta múltiplas linguagens)
+    # venv + deps
     try:
         _venv_install(app_dir)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha ao instalar dependências: {e}")
 
-    # deploy (systemd + nginx) - PASSA A PORTA ALOCADA
+    # deploy (systemd + nginx) - passa a rota SEM /get
     try:
-        _deploy_root(nome, porta, rota_publica, os.path.join(cur_link, "app"))
+        _deploy_root(nome, porta, rota_db, os.path.join(cur_link, "app"))
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
 
-    # 5) Atualiza url completa
-    url_comp = f"{PUBLIC_SCHEME}://{FIXED_DEPLOY_DOMAIN}{rota_publica}"
+    # 5) Atualiza url completa - SEM /get
+    url_comp = f"{PUBLIC_SCHEME}://{FIXED_DEPLOY_DOMAIN}{rota_db}"
     _update_after_deploy(new_id, rota_db, porta, url_comp)
 
     return MiniApiOut(
