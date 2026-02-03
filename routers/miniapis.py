@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import os, io, zipfile, shutil, socket, subprocess, json, re
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
 from pydantic import BaseModel
@@ -19,11 +19,12 @@ RUNUSER = os.getenv("MINIAPIS_RUNUSER", "app")
 PORT_START = int(os.getenv("MINIAPIS_PORT_START", "9200"))
 PORT_END   = int(os.getenv("MINIAPIS_PORT_END",   "9699"))
 
-# Host/base para montar a URL pública (ex.: IP 178..., domínio etc.)
+# Host/base para montar a URL pública
 FIXED_DEPLOY_DOMAIN = os.getenv("FIXED_DEPLOY_DOMAIN", "pinacle.com.br")
-PUBLIC_SCHEME = os.getenv("PUBLIC_SCHEME", "https")  # use "http" p/ IP sem TLS
+PUBLIC_SCHEME = os.getenv("PUBLIC_SCHEME", "https")
 
 def _ensure_dirs():
+    """Garante que diretório base existe"""
     os.makedirs(BASE_DIR, exist_ok=True)
 
 def _find_free_port() -> int:
@@ -69,7 +70,7 @@ def _api_name_exists(name: str) -> bool:
         return res.scalar_one() > 0
 
 def _venv_install(app_dir: str):
-    """Instala dependências do projeto (suporta Python, Node.js, etc)"""
+    """Instala dependências do projeto (suporta Python, Node.js, Java, Go, Rust)"""
     venv_dir = os.path.join(os.path.dirname(app_dir), ".venv")
     
     # Python
@@ -106,47 +107,23 @@ def _venv_install(app_dir: str):
 def _deploy_root(api_name: str, port: int, route_with_tipo: str, workdir_app: str):
     """
     Chama script de deploy com nome da API
-    Passamos a rota COM tipo_api (ex.: /miniapi/minha-api/get)
-    para o Nginx publicar exatamente nesse prefixo.
     """
     subprocess.run(["sudo", DEPLOY_BIN, api_name, str(port), route_with_tipo, workdir_app, RUNUSER], check=True)
 
 class MiniApiOut(BaseModel):
     """Modelo de resposta para criação de mini-API"""
-    slug: str                # nome da API
+    slug: str
     dominio: str
-    rota: str                # ex.: "/miniapi/minha-api"
-    tipo_api: str            # get|post|put|delete|cron_job|webhook|websocket
+    rota: str
     porta: int
-    servidor: str
     url_completa: Optional[str] = None
 
-def _as_singleton_list_or_none(raw: Optional[str]) -> Optional[List[str]]:
-    """
-    Se vier vazio/None -> None (vai para NULL).
-    Se vier qualquer texto -> [texto_exato] (um único elemento no array).
-    """
-    if raw is None:
-        return None
-    s = raw.strip()
-    if not s:
-        return None
-    return [s]
-
 def _insert_backend_row_initial(
-    slug: str,               # NOVO: nome único da API
-    front_ou_back: Optional[str],
-    id_empresa: Optional[int],
-    anotacoes: Optional[str],
-    dados_de_entrada: Optional[List[str]],
-    tipos_de_retorno: Optional[List[str]],
-    servidor: Optional[str],
-    tipo_api: str,
+    slug: str,
     arquivo_zip_bytes: bytes,
 ) -> int:
     """
-    Primeiro insert: ainda sem rota/porta/url (pois dependem da porta alocada).
-    Já gravamos tipo_api (ENUM) e slug (nome da API).
+    Insert inicial: cria registro com slug e arquivo ZIP
     """
     with engine.begin() as conn:
         res = conn.execute(text("""
@@ -157,21 +134,16 @@ def _insert_backend_row_initial(
                rota, porta, servidor, tipo_api)
             VALUES
               (:front_ou_back, :dominio, :slug, :arquivo_zip, NULL,
-               NULL, :id_empresa, false, :anotacoes,
-               :dados, :tipos,
-               NULL, NULL, :servidor, CAST(:tipo_api AS "global".tipo_api_enum))
+               NULL, NULL, false, NULL,
+               NULL, NULL,
+               NULL, NULL, NULL, CAST(:tipo_api AS "global".tipo_api_enum))
             RETURNING id
         """), {
-            "front_ou_back": front_ou_back or "backend",
+            "front_ou_back": "backend",
             "dominio": None,
-            "slug": slug,  # NOVO: nome único
+            "slug": slug,
             "arquivo_zip": arquivo_zip_bytes,
-            "id_empresa": id_empresa,
-            "anotacoes": (anotacoes or ""),
-            "dados": dados_de_entrada,
-            "tipos": tipos_de_retorno,
-            "servidor": servidor,
-            "tipo_api": tipo_api,
+            "tipo_api": "get",
         })
         return res.scalar_one()
 
@@ -185,29 +157,23 @@ def _update_after_deploy(id_: int, rota: str, porta: int, url: str):
         """), {"rota": rota, "porta": str(porta), "url": url, "id": id_})
 
 @router.post("/", response_model=MiniApiOut, status_code=status.HTTP_201_CREATED,
-             summary="Criar mini-backend (ZIP) e publicar - Aceita qualquer linguagem")
+             summary="Criar mini-backend (ZIP) e publicar")
 def criar_miniapi(
     arquivo: UploadFile = File(..., description="ZIP com app/main.py (Python) ou equivalente em outra linguagem"),
-    # ==== campos vindos do frontend ====
     nome: str = Form(..., description="Nome único da API (3-50 caracteres: letras, números, hífen, underscore)"),
-    front_ou_back: Optional[str] = Form(None),     # frontend|backend|fullstack
-    id_empresa: Optional[int] = Form(None),
-    anotacoes: Optional[str] = Form(None),
-    dados_de_entrada: Optional[str] = Form(None, description="Qualquer texto"),
-    tipos_de_retorno: Optional[str] = Form(None, description="Qualquer texto"),
-    servidor: Optional[str] = Form(None),          # ENUM existente: "teste 1" | "teste 2" | ...
-    tipo_api: str = Form(..., description="get|post|put|delete|cron_job|webhook|websocket"),
-    # ==== opcional: pode forçar porta; senão aloca automática ====
-    porta: Optional[int] = Form(None),
 ):
     """
+    Cria e publica uma mini-API a partir de um arquivo ZIP.
+    
     Fluxo:
       1) Valida nome da API (único, formato válido)
-      2) INSERT inicial em global.aplicacoes (rota/porta/url NULL; tipo_api preenchido)
-      3) Escolhe porta (auto se não vier)
-      4) Extrai release, prepara ambiente (suporta Python, Node.js, Java, Go, Rust, etc)
-      5) Chama deploy (Nginx + systemd) em /miniapi/{nome}/{tipo_api}/
-      6) UPDATE em global.aplicacoes com rota, porta e url_completa
+      2) INSERT inicial em global.aplicacoes com slug
+      3) Aloca porta aleatória (9200-9699)
+      4) Extrai release e prepara ambiente (detecta linguagem automaticamente)
+      5) Instala dependências (Python/Node.js/Java/Go/Rust)
+      6) Faz deploy (Nginx + systemd)
+      7) UPDATE com rota, porta e URL
+      8) Retorna URL completa para acesso
       
     Aceita qualquer tipo de backend:
       - Python: requirements.txt
@@ -215,6 +181,11 @@ def criar_miniapi(
       - Java: pom.xml
       - Go: go.mod
       - Rust: Cargo.toml
+    
+    Exemplo de uso:
+      curl -X POST "https://pinacle.com.br/pnapi/miniapis/" \\
+        -F "arquivo=@api.zip" \\
+        -F "nome=minha-api"
     """
     _ensure_dirs()
 
@@ -231,14 +202,7 @@ def criar_miniapi(
             detail=f"Nome '{nome}' já existe. Escolha outro nome único."
         )
 
-    # >>> Sem interpretação: salva como veio (um único elemento no array) ou NULL
-    dados_list = _as_singleton_list_or_none(dados_de_entrada)
-    tipos_list = _as_singleton_list_or_none(tipos_de_retorno)
-
-    # anotacoes independentes
-    anotacoes_final = (anotacoes or "").strip()
-
-    # Lê arquivo
+    # Lê arquivo ZIP
     rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))
     os.makedirs(rel_dir, exist_ok=True)
     zip_path = os.path.join(rel_dir, "src.zip")
@@ -247,28 +211,19 @@ def criar_miniapi(
 
     # 1) Insert inicial
     new_id = _insert_backend_row_initial(
-        slug=nome,  # NOVO: usa nome ao invés de ID
-        front_ou_back=front_ou_back,
-        id_empresa=id_empresa,
-        anotacoes=anotacoes_final,
-        dados_de_entrada=dados_list,
-        tipos_de_retorno=tipos_list,
-        servidor=servidor,
-        tipo_api=tipo_api,
+        slug=nome,
         arquivo_zip_bytes=zip_bytes,
     )
 
     # 2) Rota (com nome da API)
     rota_db = f"/miniapi/{nome}"
-    # Rota publicada no Nginx (inclui tipo_api)
-    rota_publica = f"/miniapi/{nome}/{tipo_api}"
+    rota_publica = f"/miniapi/{nome}/get"  # tipo_api padrão: get
 
-    # 3) Porta
-    if porta is None:
-        porta = _find_free_port()
+    # 3) Porta aleatória
+    porta = _find_free_port()
 
     # 4) Extrai release definitivo e prepara app
-    obj_dir = os.path.join(BASE_DIR, nome)  # NOVO: usa nome ao invés de ID
+    obj_dir = os.path.join(BASE_DIR, nome)
     release_dir = os.path.join(obj_dir, "releases", datetime.utcnow().strftime("%Y%m%d-%H%M%S"))
     cur_link = os.path.join(obj_dir, "current")
     app_dir = os.path.join(release_dir, "app")
@@ -294,22 +249,20 @@ def criar_miniapi(
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha ao instalar dependências: {e}")
 
-    # deploy (systemd + nginx) – com rota incluindo tipo_api
+    # deploy (systemd + nginx)
     try:
         _deploy_root(nome, porta, rota_publica, os.path.join(cur_link, "app"))
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
 
-    # 5) Atualiza url completa e campos dinâmicos
+    # 5) Atualiza url completa
     url_comp = f"{PUBLIC_SCHEME}://{FIXED_DEPLOY_DOMAIN}{rota_publica}"
     _update_after_deploy(new_id, rota_db, porta, url_comp)
 
     return MiniApiOut(
-        slug=nome,  # NOVO: retorna nome
+        slug=nome,
         dominio=FIXED_DEPLOY_DOMAIN,
         rota=rota_db,
-        tipo_api=tipo_api,
         porta=porta,
-        servidor=servidor or "default",
         url_completa=url_comp,
     )
