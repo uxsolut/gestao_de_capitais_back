@@ -19,9 +19,18 @@ RUNUSER = os.getenv("MINIAPIS_RUNUSER", "app")
 PORT_START = int(os.getenv("MINIAPIS_PORT_START", "9200"))
 PORT_END   = int(os.getenv("MINIAPIS_PORT_END",   "9699"))
 
-# Host/base para montar a URL pública
+# Host/base para montar a URL pública (domínio padrão)
 FIXED_DEPLOY_DOMAIN = "pinacle.com.br"
 PUBLIC_SCHEME = "https"
+
+# Lista de domínios permitidos (adicione seus domínios aqui)
+DOMINIOS_PERMITIDOS = [
+    "pinacle.com.br",
+    "gestordecapitais.com",
+    "tetramusic.com.br",
+    "grupoaguiarbrasil.com",
+    # Adicione outros domínios aqui
+]
 
 def _ensure_dirs():
     """Garante que diretório base existe"""
@@ -60,6 +69,18 @@ def _symlink_force(link: str, target: str):
 def _validate_api_name(name: str) -> bool:
     """Valida nome da API: apenas letras, números, hífen e underscore"""
     return bool(re.match(r"^[a-zA-Z0-9_-]{3,50}$", name))
+
+def _validate_nome_url(name: str) -> bool:
+    """Valida nome_url: apenas letras, números, hífen e underscore (pode ser vazio)"""
+    if not name:
+        return True  # Vazio é permitido
+    return bool(re.match(r"^[a-zA-Z0-9_-]{1,50}$", name))
+
+def _validate_versao(versao: str) -> bool:
+    """Valida versão: apenas números e pontos (pode ser vazio)"""
+    if not versao:
+        return True  # Vazio é permitido
+    return bool(re.match(r"^[a-zA-Z0-9._-]{1,20}$", versao))
 
 def _api_name_exists(name: str) -> bool:
     """Verifica se nome da API já existe no banco"""
@@ -105,11 +126,11 @@ def _venv_install(app_dir: str):
         pip = os.path.join(venv_dir, "bin", "pip")
         subprocess.run([pip, "install", "fastapi", "uvicorn"], check=True)
 
-def _deploy_root(api_name: str, port: int, route: str, workdir_app: str):
+def _deploy_root(api_name: str, port: int, route: str, workdir_app: str, dominio: str = "pinacle.com.br"):
     """
-    Chama script de deploy com nome da API
+    Chama script de deploy com nome da API e domínio customizado
     """
-    subprocess.run(["sudo", DEPLOY_BIN, api_name, str(port), route, workdir_app, RUNUSER], check=True)
+    subprocess.run(["sudo", DEPLOY_BIN, api_name, str(port), route, workdir_app, RUNUSER, dominio], check=True)
 
 class MiniApiOut(BaseModel):
     """Modelo de resposta para criação de mini-API"""
@@ -161,6 +182,10 @@ def _update_after_deploy(id_: int, rota: str, porta: int, url: str):
 def criar_miniapi(
     arquivo: UploadFile = File(..., description="ZIP com app/main.py (Python) ou equivalente em outra linguagem"),
     nome: str = Form(..., description="Nome único da API (3-50 caracteres: letras, números, hífen, underscore)"),
+    # NOVOS PARÂMETROS PARA URL DINÂMICA
+    dominio: str = Form(default="pinacle.com.br", description="Domínio customizado (ex: gestordecapitais.com)"),
+    nome_url: str = Form(default="", description="Nome URL (ex: vitor) - opcional"),
+    versao: str = Form(default="", description="Versão da API (ex: 1, v1, 2.0) - opcional"),
 ):
     """
     Cria e publica uma mini-API a partir de um arquivo ZIP.
@@ -182,10 +207,24 @@ def criar_miniapi(
       - Go: go.mod
       - Rust: Cargo.toml
     
-    Exemplo de uso:
+    URLs Dinâmicas:
+      - Padrão: https://pinacle.com.br/miniapi/{nome}
+      - Customizada: https://{dominio}/{nome_url}/{nome}/{versao}
+    
+    Exemplo de uso (padrão):
       curl -X POST "https://pinacle.com.br/pnapi/miniapis/" \\
         -F "arquivo=@api.zip" \\
         -F "nome=minha-api"
+    
+    Exemplo de uso (URL customizada):
+      curl -X POST "https://pinacle.com.br/pnapi/miniapis/" \\
+        -F "arquivo=@api.zip" \\
+        -F "nome=apilegal" \\
+        -F "dominio=gestordecapitais.com" \\
+        -F "nome_url=vitor" \\
+        -F "versao=1"
+      
+      Resultado: https://gestordecapitais.com/vitor/apilegal/1/
     """
     _ensure_dirs()
 
@@ -201,6 +240,25 @@ def criar_miniapi(
             status_code=409,
             detail=f"Nome '{nome}' já existe. Escolha outro nome único."
         )
+    
+    # === VALIDAÇÃO DOS NOVOS PARÂMETROS ===
+    if dominio and dominio not in DOMINIOS_PERMITIDOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Domínio '{dominio}' não permitido. Domínios válidos: {', '.join(DOMINIOS_PERMITIDOS)}"
+        )
+    
+    if not _validate_nome_url(nome_url):
+        raise HTTPException(
+            status_code=400,
+            detail="Nome URL inválido. Use 1-50 caracteres: letras, números, hífen, underscore"
+        )
+    
+    if not _validate_versao(versao):
+        raise HTTPException(
+            status_code=400,
+            detail="Versão inválida. Use 1-20 caracteres: letras, números, pontos, hífen, underscore"
+        )
 
     # Lê arquivo ZIP
     rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))
@@ -215,8 +273,20 @@ def criar_miniapi(
         arquivo_zip_bytes=zip_bytes,
     )
 
-    # 2) Rota SEM /get - apenas /miniapi/{nome}
-    rota_db = f"/miniapi/{nome}"
+    # 2) Construir rota dinamicamente
+    # Se nome_url e versao foram informados, usa URL customizada
+    # Senão, usa URL padrão /miniapi/{nome}
+    if nome_url and versao:
+        rota_db = f"/{nome_url}/{nome}/{versao}"
+    elif nome_url:
+        rota_db = f"/{nome_url}/{nome}"
+    elif versao:
+        rota_db = f"/miniapi/{nome}/{versao}"
+    else:
+        rota_db = f"/miniapi/{nome}"
+    
+    # Usar domínio customizado ou padrão
+    dominio_final = dominio if dominio else FIXED_DEPLOY_DOMAIN
 
     # 3) Porta aleatória
     porta = _find_free_port()
@@ -247,19 +317,19 @@ def criar_miniapi(
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha ao instalar dependências: {e}")
 
-    # deploy (systemd + nginx) - passa a rota SEM /get
+    # deploy (systemd + nginx) - passa a rota e domínio customizado
     try:
-        _deploy_root(nome, porta, rota_db, os.path.join(cur_link, "app"))
+        _deploy_root(nome, porta, rota_db, os.path.join(cur_link, "app"), dominio_final)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
 
-    # 5) Atualiza url completa - SEM /get
-    url_comp = f"{PUBLIC_SCHEME}://{FIXED_DEPLOY_DOMAIN}{rota_db}"
+    # 5) Atualiza url completa com domínio customizado
+    url_comp = f"{PUBLIC_SCHEME}://{dominio_final}{rota_db}"
     _update_after_deploy(new_id, rota_db, porta, url_comp)
 
     return MiniApiOut(
         slug=nome,
-        dominio=FIXED_DEPLOY_DOMAIN,
+        dominio=dominio_final,
         rota=rota_db,
         porta=porta,
         url_completa=url_comp,
