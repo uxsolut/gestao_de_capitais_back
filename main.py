@@ -49,6 +49,7 @@ from routers import status_aplicacao  # status da aplicação
 from routers import page_meta as r_page_meta
 from routers import media as r_media  # <<< ADICIONADO
 from routers import email as email_router
+from routers.frontends import router as frontends_router
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -154,6 +155,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(cliente_contas.router)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
         app.include_router(miniapis_router)
+        app.include_router(frontends_router)
         app.include_router(fullstack.router)
         app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
@@ -177,6 +179,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(cliente_contas.router)
         app.include_router(aplicacoes.router, tags=["Aplicações"])
         app.include_router(miniapis_router)
+        app.include_router(frontends_router)
         app.include_router(fullstack.router)
         app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
