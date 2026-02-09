@@ -3,12 +3,12 @@
 """
 API para apagar/limpar URLs de backend ou frontend.
 
-Recebe uma URL completa e procura no servidor se existe algo nela.
+Recebe uma URL completa e procura EXATAMENTE por ela no servidor.
 Se encontrar, apaga tudo (diretórios, serviços, configs, banco de dados).
 
 Suporta:
-  - Backends: procura em /opt/app/api/miniapis/ por qualquer pasta
-  - Frontends: procura em /var/www/pages/ por qualquer pasta
+  - Backends: procura em /opt/app/api/miniapis/ por pasta exata
+  - Frontends: procura em /var/www/pages/ por caminho exato
 """
 import os
 import re
@@ -62,7 +62,7 @@ def _parse_url(url: str) -> dict:
     
     Retorna dict com:
       - dominio: str
-      - path: str (sem barra inicial)
+      - path: str (sem barra inicial, sem barra final)
       - partes: list de path parts
     """
     # Remove barra final se existir
@@ -83,71 +83,53 @@ def _parse_url(url: str) -> dict:
     }
 
 
-def _find_backend_by_path(path_parts: list) -> Optional[str]:
+def _find_frontend_exact(dominio: str, path: str) -> Optional[dict]:
     """
-    Procura por um backend no filesystem que corresponda ao path.
+    Procura por um frontend no filesystem que corresponda EXATAMENTE ao path.
     
-    Exemplos:
-      - /miniapi/minha-api → procura por "minha-api" em /opt/app/api/miniapis/
-      - /vinagre/linguamaneiralegalbacana-3-a/14/ → procura por "linguamaneiralegalbacana-3-a"
+    Exemplo:
+      - URL: https://pinacle.com.br/testepedro/vinagrete/2/
+      - Path: testepedro/vinagrete/2
+      - Procura em: /var/www/pages/pinacle.com.br/testepedro/vinagrete/2/
     
-    Retorna o nome do backend se encontrar, None caso contrário.
+    Retorna dict com {path_completo} se encontrar EXATAMENTE, None caso contrário.
     """
-    if not path_parts:
+    if not path:
         return None
     
-    # Se for /miniapi/{nome}, o nome está em path_parts[1]
-    if len(path_parts) >= 2 and path_parts[0] == "miniapi":
-        nome = path_parts[1]
-        backend_dir = os.path.join(MINIAPIS_BASE_DIR, nome)
-        if os.path.isdir(backend_dir):
-            return nome
-        return None
+    # Constrói o path completo esperado
+    frontend_dir = os.path.join(PAGES_DIR, dominio, path)
     
-    # Caso contrário, procura em todos os path_parts
-    # Tenta encontrar uma pasta em /opt/app/api/miniapis/ que corresponda
-    for part in path_parts:
-        backend_dir = os.path.join(MINIAPIS_BASE_DIR, part)
-        if os.path.isdir(backend_dir):
-            return part
+    # Verifica se existe EXATAMENTE
+    if os.path.isdir(frontend_dir):
+        return {
+            "path_completo": frontend_dir,
+            "path": path,
+        }
     
     return None
 
 
-def _find_frontend_by_path(dominio: str, path_parts: list) -> Optional[dict]:
+def _find_backend_exact(path_parts: list) -> Optional[str]:
     """
-    Procura por um frontend no filesystem que corresponda ao path.
+    Procura por um backend no filesystem que corresponda EXATAMENTE ao path.
     
-    Exemplos:
-      - /vinagre/linguamaneiralegalbacana-3-a/14/ → procura em /var/www/pages/gestordecapitais.com/vinagre/linguamaneiralegalbacana-3-a/14/
+    Exemplo:
+      - URL: https://pinacle.com.br/miniapi/minha-api
+      - Path parts: ['miniapi', 'minha-api']
+      - Procura em: /opt/app/api/miniapis/minha-api
     
-    Retorna dict com {path_completo, nome_url, nome, versao} se encontrar, None caso contrário.
+    Retorna o nome do backend se encontrar EXATAMENTE, None caso contrário.
     """
-    if not path_parts:
+    if not path_parts or len(path_parts) < 2:
         return None
     
-    # Tenta construir o path completo
-    domain_dir = os.path.join(PAGES_DIR, dominio)
-    
-    if not os.path.isdir(domain_dir):
-        return None
-    
-    # Tenta o path completo
-    full_path = os.path.join(domain_dir, *path_parts)
-    if os.path.isdir(full_path):
-        return {
-            "path_completo": full_path,
-            "partes": path_parts,
-        }
-    
-    # Tenta caminhos parciais (em caso de path_parts ter mais níveis)
-    for i in range(len(path_parts), 0, -1):
-        partial_path = os.path.join(domain_dir, *path_parts[:i])
-        if os.path.isdir(partial_path):
-            return {
-                "path_completo": partial_path,
-                "partes": path_parts[:i],
-            }
+    # Se for /miniapi/{nome}, o nome está em path_parts[1]
+    if path_parts[0] == "miniapi":
+        nome = path_parts[1]
+        backend_dir = os.path.join(MINIAPIS_BASE_DIR, nome)
+        if os.path.isdir(backend_dir):
+            return nome
     
     return None
 
@@ -265,7 +247,7 @@ def _delete_backend(nome: str) -> dict:
         }
 
 
-def _delete_frontend(path_completo: str, partes: list) -> dict:
+def _delete_frontend(path_completo: str, path: str) -> dict:
     """
     Deleta frontend:
     1. Remove diretório
@@ -292,6 +274,7 @@ def _delete_frontend(path_completo: str, partes: list) -> dict:
             detalhes["directory_not_found"] = True
         
         # Remove do banco de dados (tenta por slug - último part do path)
+        partes = [p for p in path.split("/") if p]
         if partes:
             slug = partes[-1]  # Usa o último part como slug
             try:
@@ -324,18 +307,19 @@ def _delete_frontend(path_completo: str, partes: list) -> dict:
              summary="Apagar/limpar uma URL (backend ou frontend)")
 async def deletar_url(request: DeleteRequest):
     """
-    Apaga uma URL completa, procurando no servidor se existe algo nela.
-    
-    Exemplos:
-      - Backend: https://pinacle.com.br/miniapi/minha-api
-      - Backend customizado: https://gestordecapitais.com/vinagre/linguamaneiralegalbacana-3-a/14/
-      - Frontend: https://pinacle.com.br/testepedro/vinagrete/2/
+    Apaga uma URL completa, procurando EXATAMENTE por ela no servidor.
     
     Fluxo:
       1) Parseia URL
-      2) Procura no filesystem se existe backend ou frontend
-      3) Apaga tudo encontrado (diretório, systemd, Nginx, banco de dados)
-      4) Retorna status
+      2) Procura EXATAMENTE por frontend em /var/www/pages/{dominio}/{path}/
+      3) Se não encontrar, procura EXATAMENTE por backend em /opt/app/api/miniapis/
+      4) Se encontrar, apaga tudo (diretório, systemd, Nginx, banco de dados)
+      5) Se não encontrar em nenhum lugar, retorna erro 404
+    
+    Exemplos:
+      - Backend: https://pinacle.com.br/miniapi/minha-api
+      - Frontend: https://pinacle.com.br/testepedro/vinagrete/2/
+      - Frontend sem barra: https://pinacle.com.br/testepedro/vinagrete/2
     """
     
     # Parse URL
@@ -348,6 +332,7 @@ async def deletar_url(request: DeleteRequest):
         )
     
     dominio = parsed["dominio"]
+    path = parsed["path"]
     path_parts = parsed["partes"]
     
     # Valida domínio
@@ -357,10 +342,10 @@ async def deletar_url(request: DeleteRequest):
             detail=f"Domínio '{dominio}' não permitido. Domínios válidos: {', '.join(DOMINIOS_PERMITIDOS)}"
         )
     
-    # PRIORIDADE 1: Procura por frontend PRIMEIRO
-    frontend_info = _find_frontend_by_path(dominio, path_parts)
+    # PASSO 1: Procura EXATAMENTE por frontend
+    frontend_info = _find_frontend_exact(dominio, path)
     if frontend_info:
-        result = _delete_frontend(frontend_info["path_completo"], frontend_info["partes"])
+        result = _delete_frontend(frontend_info["path_completo"], frontend_info["path"])
         
         if result["sucesso"]:
             return DeleteResponse(
@@ -375,8 +360,8 @@ async def deletar_url(request: DeleteRequest):
                 detail=f"Erro ao deletar frontend: {result.get('erro')}"
             )
     
-    # PRIORIDADE 2: Procura por backend
-    backend_nome = _find_backend_by_path(path_parts)
+    # PASSO 2: Procura EXATAMENTE por backend
+    backend_nome = _find_backend_exact(path_parts)
     if backend_nome:
         result = _delete_backend(backend_nome)
         
@@ -393,8 +378,8 @@ async def deletar_url(request: DeleteRequest):
                 detail=f"Erro ao deletar backend: {result.get('erro')}"
             )
     
-    # Nada encontrado
+    # PASSO 3: Nada encontrado
     raise HTTPException(
         status_code=404,
-        detail=f"Nenhum backend ou frontend encontrado para a URL: {request.url}"
+        detail=f"Nenhum backend ou frontend encontrado para a URL exata: {request.url}"
     )
