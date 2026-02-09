@@ -140,33 +140,22 @@ def _url_exists_exact(url_completa: str) -> bool:
             return True
     
     # ===== VERIFICAÇÃO 2: BACKEND =====
-    # Itera todas as APIs deployadas e verifica seus metadados
-    if os.path.exists(MINIAPIS_DIR):
+    # Verifica se a rota já existe em arquivos nginx
+    nginx_miniapis_dir = "/etc/nginx/miniapis"
+    if os.path.exists(nginx_miniapis_dir):
         try:
-            for api_name in os.listdir(MINIAPIS_DIR):
-                api_dir = os.path.join(MINIAPIS_DIR, api_name)
-                
-                # Ignora se não é diretório
-                if not os.path.isdir(api_dir):
-                    continue
-                
-                # Ignora diretório "tmp"
-                if api_name == "tmp":
-                    continue
-                
-                metadata_path = os.path.join(api_dir, "metadata.json")
-                if os.path.exists(metadata_path):
+            for conf_file in os.listdir(nginx_miniapis_dir):
+                conf_path = os.path.join(nginx_miniapis_dir, conf_file)
+                if os.path.isfile(conf_path):
                     try:
-                        with open(metadata_path, "r") as f:
-                            metadata = json.load(f)
-                            # Compara URL completa normalizada
-                            if metadata.get("url_completa", "").rstrip('/') == url_check:
+                        with open(conf_path, "r") as f:
+                            content = f.read()
+                            # Procura pela rota no arquivo nginx
+                            if f"location {path}" in content or f"location /{path}" in content:
                                 return True
-                    except (json.JSONDecodeError, IOError):
-                        # Se não conseguir ler metadados, continua
+                    except (IOError, OSError):
                         continue
         except (OSError, Exception):
-            # Se não conseguir listar diretório, continua
             pass
     
     return False
