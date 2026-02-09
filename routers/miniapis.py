@@ -8,10 +8,10 @@ e publica em porta aleatória (9200-9699)
 
 VALIDAÇÃO DE URLs:
 - Antes de fazer deploy, verifica se a URL completa já existe
-- Procura em frontend (/var/www/pages) e backend (metadata.json)
+- Procura em frontend (/var/www/pages) e backend (nginx + systemd)
 - Se encontrar, retorna erro 409 (Conflict) e não faz deploy
 """
-import os, io, zipfile, shutil, socket, subprocess, json, re, hashlib
+import os, io, zipfile, shutil, socket, subprocess, json, re
 from datetime import datetime
 from typing import Optional, List
 
@@ -40,23 +40,6 @@ DOMINIOS_PERMITIDOS = [
     "grupoaguiarbrasil.com",
 ]
 
-def _generate_service_name(url_completa: str) -> str:
-    """
-    Gera nome ÚNICO de serviço baseado na URL completa.
-    
-    Isso garante que cada URL diferente tenha um serviço diferente,
-    permitindo múltiplos backends rodando simultaneamente.
-    
-    Exemplo:
-    - https://pinacle.com.br/teste/junior/2 → miniapi-a1b2c3d4
-    - https://pinacle.com.br/teste/junior/3 → miniapi-e5f6g7h8
-    """
-    # Remove scheme e normaliza
-    url_clean = url_completa.replace("https://", "").replace("http://", "").rstrip('/')
-    # Cria hash MD5 curto (8 caracteres)
-    hash_short = hashlib.md5(url_clean.encode()).hexdigest()[:8]
-    return f"miniapi-{hash_short}"
-
 def _ensure_dirs():
     """Garante que diretório base existe"""
     os.makedirs(BASE_DIR, exist_ok=True)
@@ -65,7 +48,6 @@ def _find_free_port() -> int:
     """Encontra uma porta livre no pool configurado"""
     for p in range(PORT_START, PORT_END + 1):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("0.0.0.0", p))
                 s.close()
@@ -108,53 +90,13 @@ def _validate_versao(versao: str) -> bool:
         return True
     return bool(re.match(r"^[a-zA-Z0-9._-]{1,20}$", versao))
 
-def _build_url_backend(dominio: str, nome_url: str, nome: str, versao: str) -> str:
-    """Constrói a URL pública EXATA do backend"""
-    parts = [p for p in [nome_url, nome, versao] if p]
-    path = "/".join(parts)
-    if path:
-        return f"{PUBLIC_SCHEME}://{dominio}/{path}"
-    else:
-        return f"{PUBLIC_SCHEME}://{dominio}"
-
-
-def _save_metadata(api_name: str, dominio: str, rota: str, porta: int, url_completa: str):
-    """
-    Salva metadados do deploy em JSON para validação futura.
-    
-    Arquivo criado em: /opt/app/api/miniapis/{api_name}/metadata.json
-    
-    Conteúdo:
-    {
-      "nome": "bingo",
-      "dominio": "pinacle.com.br",
-      "rota": "/miniapi/bingo",
-      "url_completa": "https://pinacle.com.br/miniapi/bingo",
-      "porta": 9250,
-      "deployed_at": "2026-02-09T16:59:00Z"
-    }
-    """
-    metadata = {
-        "nome": api_name,
-        "dominio": dominio,
-        "rota": rota,
-        "url_completa": url_completa,
-        "porta": porta,
-        "deployed_at": datetime.utcnow().isoformat() + "Z"
-    }
-    metadata_path = os.path.join(BASE_DIR, api_name, "metadata.json")
-    os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
-    with open(metadata_path, "w") as f:
-        json.dump(metadata, f, indent=2)
-
-
 def _url_exists_exact(url_completa: str) -> bool:
     """
-    Verifica se a URL INTEIRA já existe em frontend OU backend.
+    Verifica se a URL INTEIRA já existe no servidor.
     
     Procura em dois lugares:
     1. Frontend: /var/www/pages/{dominio}/{path}
-    2. Backend: Lê metadata.json de todas as APIs deployadas em /opt/app/api/miniapis/
+    2. Backend: Lê nginx configs e systemd services
     
     Retorna:
     - True: URL já existe (não fazer deploy)
@@ -187,37 +129,25 @@ def _url_exists_exact(url_completa: str) -> bool:
             return True
     
     # ===== VERIFICAÇÃO 2: BACKEND =====
-    # Itera todas as APIs deployadas e verifica seus metadados
-    if os.path.exists(BASE_DIR):
+    # Verifica se a rota já existe em arquivos nginx
+    nginx_miniapis_dir = "/etc/nginx/miniapis"
+    if os.path.exists(nginx_miniapis_dir):
         try:
-            for api_name in os.listdir(BASE_DIR):
-                api_dir = os.path.join(BASE_DIR, api_name)
-                
-                # Ignora se não é diretório
-                if not os.path.isdir(api_dir):
-                    continue
-                
-                # Ignora diretório "tmp"
-                if api_name == "tmp":
-                    continue
-                
-                metadata_path = os.path.join(api_dir, "metadata.json")
-                if os.path.exists(metadata_path):
+            for conf_file in os.listdir(nginx_miniapis_dir):
+                conf_path = os.path.join(nginx_miniapis_dir, conf_file)
+                if os.path.isfile(conf_path):
                     try:
-                        with open(metadata_path, "r") as f:
-                            metadata = json.load(f)
-                            # Compara URL completa normalizada
-                            if metadata.get("url_completa", "").rstrip('/') == url_check:
+                        with open(conf_path, "r") as f:
+                            content = f.read()
+                            # Procura pela rota no arquivo nginx
+                            if f"location {path}" in content or f"location /{path}" in content:
                                 return True
-                    except (json.JSONDecodeError, IOError):
-                        # Se não conseguir ler metadados, continua
+                    except (IOError, OSError):
                         continue
         except (OSError, Exception):
-            # Se não conseguir listar diretório, continua
             pass
     
     return False
-
 
 def _venv_install(app_dir: str):
     """Instala dependências do projeto (suporta Python, Node.js, Java, Go, Rust)"""
@@ -283,13 +213,12 @@ def criar_miniapi(
     Fluxo:
       1) Valida nome da API (formato válido)
       2) Constrói URL completa
-      3) **VERIFICA se URL já existe em frontend ou backend**
+      3) **VERIFICA se URL já existe no servidor**
       4) Aloca porta aleatória (9200-9699)
       5) Extrai release e prepara ambiente (detecta linguagem automaticamente)
       6) Instala dependências (Python/Node.js/Java/Go/Rust)
       7) Faz deploy (Nginx + systemd)
-      8) Salva metadados para validação futura
-      9) Retorna URL completa para acesso
+      8) Retorna URL completa para acesso
       
     Aceita qualquer tipo de backend:
       - Python: requirements.txt
@@ -344,7 +273,7 @@ def criar_miniapi(
             status_code=400,
             detail="Versão inválida. Use 1-20 caracteres: letras, números, pontos, hífen, underscore"
         )
-    
+
     # Usar domínio customizado ou padrão
     dominio_final = dominio if dominio else FIXED_DEPLOY_DOMAIN
     
@@ -359,9 +288,9 @@ def criar_miniapi(
         rota_db = f"/miniapi/{nome}"
     
     # Construir URL completa EXATA
-    url_completa = _build_url_backend(dominio_final, nome_url, nome, versao)
+    url_completa = f"{PUBLIC_SCHEME}://{dominio_final}{rota_db}"
     
-    # === VERIFICA SE URL INTEIRA JÁ EXISTE (FRONTEND OU BACKEND) ===
+    # === VERIFICA SE URL INTEIRA JÁ EXISTE ===
     if _url_exists_exact(url_completa):
         raise HTTPException(
             status_code=409,
@@ -404,21 +333,11 @@ def criar_miniapi(
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha ao instalar dependências: {e}")
 
-    # === GERA NOME ÚNICO DE SERVIÇO BASEADO NA URL COMPLETA ===
-    service_name = _generate_service_name(url_completa)
-    
     # deploy (systemd + nginx)
     try:
-        _deploy_root(service_name, porta, rota_db, os.path.join(cur_link, "app"), dominio_final)
+        _deploy_root(nome, porta, rota_db, os.path.join(cur_link, "app"), dominio_final)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
-
-    # === SALVA METADADOS APÓS DEPLOY BEM-SUCEDIDO ===
-    try:
-        _save_metadata(nome, dominio_final, rota_db, porta, url_completa)
-    except Exception as e:
-        # Log do erro, mas não falha o deploy
-        print(f"Aviso: Falha ao salvar metadados para {nome}: {e}")
 
     return MiniApiOut(
         nome=nome,
