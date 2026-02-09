@@ -119,6 +119,35 @@ def _venv_install(app_dir: str):
         pip = os.path.join(venv_dir, "bin", "pip")
         subprocess.run([pip, "install", "fastapi", "uvicorn"], check=True)
 
+def _build_url_backend(dominio: str, nome_url: str, nome: str, versao: str) -> str:
+    """Constrói a URL pública do backend"""
+    parts = [p for p in [nome_url, nome, versao] if p]
+    path = "/".join(parts)
+    if path:
+        return f"{PUBLIC_SCHEME}://{dominio}/{path}"
+    else:
+        return f"{PUBLIC_SCHEME}://{dominio}"
+
+
+def _url_exists(dominio: str, nome_url: str, nome: str, versao: str) -> bool:
+    """Verifica se a URL já existe no frontend ou backend"""
+    # Constrói o path exato que seria criado
+    parts = [p for p in [nome_url, nome, versao] if p]
+    path_parts = "/".join(parts)
+    
+    # Procura em /var/www/pages/{dominio}/{path}
+    frontend_path = os.path.join("/var/www/pages", dominio, path_parts)
+    if os.path.exists(frontend_path):
+        return True
+    
+    # Procura em /opt/app/api/miniapis/{nome}
+    backend_path = os.path.join(BASE_DIR, nome)
+    if os.path.exists(backend_path):
+        return True
+    
+    return False
+
+
 def _deploy_root(api_name: str, port: int, route: str, workdir_app: str, dominio: str = "pinacle.com.br"):
     """
     Chama script de deploy com nome da API e domínio customizado
@@ -204,16 +233,12 @@ def criar_miniapi(
     if not _validate_versao(versao):
         raise HTTPException(
             status_code=400,
-            detail="Versão inválida. Use 1-20 caracteres: letras, números, pontos, hífen, underscore"
+            detail="Versão inválida. Use 1-20 caracteres: letras, números, pontos, hífem, underscore"
         )
-
-    # Lê arquivo ZIP
-    rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))
-    os.makedirs(rel_dir, exist_ok=True)
-    zip_path = os.path.join(rel_dir, "src.zip")
-    zip_bytes = arquivo.file.read()
-    _write_bytes(zip_path, zip_bytes)
-
+    
+    # Usar domínio customizado ou padrão
+    dominio_final = dominio if dominio else FIXED_DEPLOY_DOMAIN
+    
     # 1) Construir rota dinamicamente
     if nome_url and versao:
         rota_db = f"/{nome_url}/{nome}/{versao}"
@@ -224,8 +249,19 @@ def criar_miniapi(
     else:
         rota_db = f"/miniapi/{nome}"
     
-    # Usar domínio customizado ou padrão
-    dominio_final = dominio if dominio else FIXED_DEPLOY_DOMAIN
+    # === VERIFICA SE URL JÁ EXISTE ===
+    if _url_exists(dominio_final, nome_url, nome, versao):
+        raise HTTPException(
+            status_code=409,
+            detail=f"URL já existe. Não é possível criar: {_build_url_backend(dominio_final, nome_url, nome, versao)}"
+        )
+
+    # Lê arquivo ZIP
+    rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))
+    os.makedirs(rel_dir, exist_ok=True)
+    zip_path = os.path.join(rel_dir, "src.zip")
+    zip_bytes = arquivo.file.read()
+    _write_bytes(zip_path, zip_bytes)
 
     # 2) Porta aleatória
     porta = _find_free_port()

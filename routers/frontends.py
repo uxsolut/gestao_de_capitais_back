@@ -95,6 +95,25 @@ def _validate_zip(zip_bytes: bytes) -> bool:
         return False
 
 
+def _url_exists(dominio: str, nome_url: str, nome: str, versao: str) -> bool:
+    """Verifica se a URL já existe no frontend ou backend"""
+    # Constrói o path exato que seria criado
+    parts = [p for p in [nome_url, nome, versao] if p]
+    path_parts = "/".join(parts)
+    
+    # Procura em /var/www/pages/{dominio}/{path}
+    frontend_path = os.path.join(PAGES_DIR, dominio, path_parts)
+    if os.path.exists(frontend_path):
+        return True
+    
+    # Procura em /opt/app/api/miniapis/{nome}
+    backend_path = os.path.join("/opt/app/api/miniapis", nome)
+    if os.path.exists(backend_path):
+        return True
+    
+    return False
+
+
 # =========================================================
 #                    MODELO DE RESPOSTA
 # =========================================================
@@ -184,6 +203,13 @@ async def criar_frontend(
     if not _validate_zip(zip_bytes):
         raise HTTPException(status_code=400, detail="Arquivo inválido. Envie um ZIP válido.")
 
+    # === VERIFICA SE URL JÁ EXISTE ===
+    if _url_exists(dominio, nome_url, nome, versao):
+        raise HTTPException(
+            status_code=409,
+            detail=f"URL já existe. Não é possível criar: {_build_url(dominio, nome_url, nome, versao)}"
+        )
+    
     # === CONSTRÓI URL E ROTA ===
     url_completa = _build_url(dominio, nome_url, nome, versao)
     rota = _build_rota(nome_url, nome, versao)
