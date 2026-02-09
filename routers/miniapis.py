@@ -11,7 +11,7 @@ VALIDAÇÃO DE URLs:
 - Procura em frontend (/var/www/pages) e backend (metadata.json)
 - Se encontrar, retorna erro 409 (Conflict) e não faz deploy
 """
-import os, io, zipfile, shutil, socket, subprocess, json, re
+import os, io, zipfile, shutil, socket, subprocess, json, re, hashlib
 from datetime import datetime
 from typing import Optional, List
 
@@ -39,6 +39,23 @@ DOMINIOS_PERMITIDOS = [
     "tetramusic.com.br",
     "grupoaguiarbrasil.com",
 ]
+
+def _generate_service_name(url_completa: str) -> str:
+    """
+    Gera nome ÚNICO de serviço baseado na URL completa.
+    
+    Isso garante que cada URL diferente tenha um serviço diferente,
+    permitindo múltiplos backends rodando simultaneamente.
+    
+    Exemplo:
+    - https://pinacle.com.br/teste/junior/2 → miniapi-a1b2c3d4
+    - https://pinacle.com.br/teste/junior/3 → miniapi-e5f6g7h8
+    """
+    # Remove scheme e normaliza
+    url_clean = url_completa.replace("https://", "").replace("http://", "").rstrip('/')
+    # Cria hash MD5 curto (8 caracteres)
+    hash_short = hashlib.md5(url_clean.encode()).hexdigest()[:8]
+    return f"miniapi-{hash_short}"
 
 def _ensure_dirs():
     """Garante que diretório base existe"""
@@ -387,9 +404,12 @@ def criar_miniapi(
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha ao instalar dependências: {e}")
 
+    # === GERA NOME ÚNICO DE SERVIÇO BASEADO NA URL COMPLETA ===
+    service_name = _generate_service_name(url_completa)
+    
     # deploy (systemd + nginx)
     try:
-        _deploy_root(nome, porta, rota_db, os.path.join(cur_link, "app"), dominio_final)
+        _deploy_root(service_name, porta, rota_db, os.path.join(cur_link, "app"), dominio_final)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
 
