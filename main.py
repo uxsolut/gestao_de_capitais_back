@@ -157,6 +157,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(aplicacoes.router, tags=["Aplicações"])
         app.include_router(miniapis_router)
         app.include_router(frontends_router)
+        app.include_router(delete_router)
         app.include_router(fullstack.router)
         app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
@@ -182,6 +183,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(aplicacoes.router, tags=["Aplicações"])
         app.include_router(miniapis_router)
         app.include_router(frontends_router)
+        app.include_router(delete_router)
         app.include_router(fullstack.router)
         app.include_router(r_empresas.router, tags=["Empresas"])
         app.include_router(r_tipo_de_ordem.router, tags=["Tipo de Ordem"])
@@ -194,7 +196,6 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(email_router.router)
         app.include_router(assinaturas.router)
         app.include_router(contatos.router)
-        app.include_router(delete_router)
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
