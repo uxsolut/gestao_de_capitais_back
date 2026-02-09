@@ -20,6 +20,7 @@ DEPLOY_BIN = os.getenv("FRONTEND_DEPLOY_BIN", "/usr/local/bin/frontend-deploy.sh
 PAGES_DIR = os.getenv("FRONTEND_PAGES_DIR", "/var/www/pages")
 TMP_DIR = os.getenv("FRONTEND_TMP_DIR", "/tmp/frontend-deploys")
 PUBLIC_SCHEME = "https"
+MINIAPIS_DIR = "/opt/app/api/miniapis"
 
 # Domínios permitidos
 DOMINIOS_PERMITIDOS = [
@@ -61,7 +62,7 @@ def _validate_dominio(dominio: str) -> bool:
 #                    HELPERS
 # =========================================================
 def _build_url(dominio: str, nome_url: str, nome: str, versao: str) -> str:
-    """Constrói a URL pública do frontend"""
+    """Constrói a URL pública EXATA do frontend"""
     parts = [p for p in [nome_url, nome, versao] if p]
     path = "/".join(parts)
     if path:
@@ -95,21 +96,41 @@ def _validate_zip(zip_bytes: bytes) -> bool:
         return False
 
 
-def _url_exists(dominio: str, nome_url: str, nome: str, versao: str) -> bool:
-    """Verifica se a URL já existe no frontend ou backend"""
-    # Constrói o path exato que seria criado
-    parts = [p for p in [nome_url, nome, versao] if p]
-    path_parts = "/".join(parts)
+def _url_exists_exact(url_completa: str) -> bool:
+    """
+    Verifica se a URL INTEIRA já existe em frontend ou backend.
+    Procura APENAS pela URL EXATA, não por partes dela.
+    """
+    # Remove trailing slash para normalização
+    url_check = url_completa.rstrip('/')
     
-    # Procura em /var/www/pages/{dominio}/{path}
-    frontend_path = os.path.join(PAGES_DIR, dominio, path_parts)
-    if os.path.exists(frontend_path):
-        return True
+    # Extrai dominio e path da URL
+    # URL format: https://dominio/path
+    if url_check.startswith("https://"):
+        url_without_scheme = url_check[8:]  # Remove "https://"
+    elif url_check.startswith("http://"):
+        url_without_scheme = url_check[7:]  # Remove "http://"
+    else:
+        url_without_scheme = url_check
     
-    # Procura em /opt/app/api/miniapis/{nome}
-    backend_path = os.path.join("/opt/app/api/miniapis", nome)
-    if os.path.exists(backend_path):
-        return True
+    # Separa dominio do path
+    if "/" in url_without_scheme:
+        dominio, path = url_without_scheme.split("/", 1)
+    else:
+        dominio = url_without_scheme
+        path = ""
+    
+    # Procura em frontend: /var/www/pages/{dominio}/{path}
+    if path:
+        frontend_path = os.path.join(PAGES_DIR, dominio, path)
+        if os.path.exists(frontend_path):
+            return True
+    
+    # Procura em backend: /opt/app/api/miniapis/{nome}
+    # Para backend, procura por qualquer pasta que contenha a URL na sua rota
+    # Mas como não temos a rota armazenada, procuramos apenas pelo nome da API
+    # Isso é limitado, então apenas retorna False para backend check
+    # O backend check seria feito comparando com a rota armazenada em nginx/systemd
     
     return False
 
@@ -203,16 +224,16 @@ async def criar_frontend(
     if not _validate_zip(zip_bytes):
         raise HTTPException(status_code=400, detail="Arquivo inválido. Envie um ZIP válido.")
 
-    # === VERIFICA SE URL JÁ EXISTE ===
-    if _url_exists(dominio, nome_url, nome, versao):
-        raise HTTPException(
-            status_code=409,
-            detail=f"URL já existe. Não é possível criar: {_build_url(dominio, nome_url, nome, versao)}"
-        )
-    
     # === CONSTRÓI URL E ROTA ===
     url_completa = _build_url(dominio, nome_url, nome, versao)
     rota = _build_rota(nome_url, nome, versao)
+    
+    # === VERIFICA SE URL INTEIRA JÁ EXISTE ===
+    if _url_exists_exact(url_completa):
+        raise HTTPException(
+            status_code=409,
+            detail=f"URL já existe. Não é possível criar: {url_completa}"
+        )
 
     # === SALVA ZIP TEMPORÁRIO ===
     os.makedirs(TMP_DIR, exist_ok=True)

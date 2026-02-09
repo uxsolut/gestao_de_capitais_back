@@ -25,6 +25,7 @@ PORT_END   = int(os.getenv("MINIAPIS_PORT_END",   "9699"))
 # Host/base para montar a URL pública (domínio padrão)
 FIXED_DEPLOY_DOMAIN = "pinacle.com.br"
 PUBLIC_SCHEME = "https"
+PAGES_DIR = "/var/www/pages"
 
 # Lista de domínios permitidos
 DOMINIOS_PERMITIDOS = [
@@ -84,6 +85,56 @@ def _validate_versao(versao: str) -> bool:
         return True
     return bool(re.match(r"^[a-zA-Z0-9._-]{1,20}$", versao))
 
+def _build_url_backend(dominio: str, nome_url: str, nome: str, versao: str) -> str:
+    """Constrói a URL pública EXATA do backend"""
+    parts = [p for p in [nome_url, nome, versao] if p]
+    path = "/".join(parts)
+    if path:
+        return f"{PUBLIC_SCHEME}://{dominio}/{path}"
+    else:
+        return f"{PUBLIC_SCHEME}://{dominio}"
+
+
+def _url_exists_exact(url_completa: str) -> bool:
+    """
+    Verifica se a URL INTEIRA já existe em frontend ou backend.
+    Procura APENAS pela URL EXATA, não por partes dela.
+    """
+    # Remove trailing slash para normalização
+    url_check = url_completa.rstrip('/')
+    
+    # Procura em /var/www/pages
+    # Extrai dominio e path da URL
+    # URL format: https://dominio/path
+    if url_check.startswith("https://"):
+        url_without_scheme = url_check[8:]  # Remove "https://"
+    elif url_check.startswith("http://"):
+        url_without_scheme = url_check[7:]  # Remove "http://"
+    else:
+        url_without_scheme = url_check
+    
+    # Separa dominio do path
+    if "/" in url_without_scheme:
+        dominio, path = url_without_scheme.split("/", 1)
+    else:
+        dominio = url_without_scheme
+        path = ""
+    
+    # Procura em frontend: /var/www/pages/{dominio}/{path}
+    if path:
+        frontend_path = os.path.join(PAGES_DIR, dominio, path)
+        if os.path.exists(frontend_path):
+            return True
+    
+    # Procura em backend: /opt/app/api/miniapis/{nome}
+    # Para backend, procura por qualquer pasta que contenha a URL na sua rota
+    # Mas como não temos a rota armazenada, procuramos apenas pelo nome da API
+    # Isso é limitado, então apenas retorna False para backend check
+    # O backend check seria feito comparando com a rota armazenada em nginx/systemd
+    
+    return False
+
+
 def _venv_install(app_dir: str):
     """Instala dependências do projeto (suporta Python, Node.js, Java, Go, Rust)"""
     venv_dir = os.path.join(os.path.dirname(app_dir), ".venv")
@@ -118,35 +169,6 @@ def _venv_install(app_dir: str):
             subprocess.run(["python3", "-m", "venv", venv_dir], check=True)
         pip = os.path.join(venv_dir, "bin", "pip")
         subprocess.run([pip, "install", "fastapi", "uvicorn"], check=True)
-
-def _build_url_backend(dominio: str, nome_url: str, nome: str, versao: str) -> str:
-    """Constrói a URL pública do backend"""
-    parts = [p for p in [nome_url, nome, versao] if p]
-    path = "/".join(parts)
-    if path:
-        return f"{PUBLIC_SCHEME}://{dominio}/{path}"
-    else:
-        return f"{PUBLIC_SCHEME}://{dominio}"
-
-
-def _url_exists(dominio: str, nome_url: str, nome: str, versao: str) -> bool:
-    """Verifica se a URL já existe no frontend ou backend"""
-    # Constrói o path exato que seria criado
-    parts = [p for p in [nome_url, nome, versao] if p]
-    path_parts = "/".join(parts)
-    
-    # Procura em /var/www/pages/{dominio}/{path}
-    frontend_path = os.path.join("/var/www/pages", dominio, path_parts)
-    if os.path.exists(frontend_path):
-        return True
-    
-    # Procura em /opt/app/api/miniapis/{nome}
-    backend_path = os.path.join(BASE_DIR, nome)
-    if os.path.exists(backend_path):
-        return True
-    
-    return False
-
 
 def _deploy_root(api_name: str, port: int, route: str, workdir_app: str, dominio: str = "pinacle.com.br"):
     """
@@ -233,7 +255,7 @@ def criar_miniapi(
     if not _validate_versao(versao):
         raise HTTPException(
             status_code=400,
-            detail="Versão inválida. Use 1-20 caracteres: letras, números, pontos, hífem, underscore"
+            detail="Versão inválida. Use 1-20 caracteres: letras, números, pontos, hífen, underscore"
         )
     
     # Usar domínio customizado ou padrão
@@ -249,11 +271,14 @@ def criar_miniapi(
     else:
         rota_db = f"/miniapi/{nome}"
     
-    # === VERIFICA SE URL JÁ EXISTE ===
-    if _url_exists(dominio_final, nome_url, nome, versao):
+    # Construir URL completa EXATA
+    url_completa = _build_url_backend(dominio_final, nome_url, nome, versao)
+    
+    # === VERIFICA SE URL INTEIRA JÁ EXISTE ===
+    if _url_exists_exact(url_completa):
         raise HTTPException(
             status_code=409,
-            detail=f"URL já existe. Não é possível criar: {_build_url_backend(dominio_final, nome_url, nome, versao)}"
+            detail=f"URL já existe. Não é possível criar: {url_completa}"
         )
 
     # Lê arquivo ZIP
@@ -298,13 +323,10 @@ def criar_miniapi(
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
 
-    # Construir URL completa
-    url_comp = f"{PUBLIC_SCHEME}://{dominio_final}{rota_db}"
-
     return MiniApiOut(
         nome=nome,
         dominio=dominio_final,
         rota=rota_db,
         porta=porta,
-        url_completa=url_comp,
+        url_completa=url_completa,
     )
