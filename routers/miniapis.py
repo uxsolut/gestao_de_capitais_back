@@ -128,21 +128,25 @@ def _url_exists_exact(url_completa: str) -> bool:
         if os.path.exists(frontend_path):
             return True
     
-    # ===== VERIFICAÇÃO 2: BACKEND =====
-    # Verifica se a rota já existe em arquivos nginx
-    nginx_miniapis_dir = "/etc/nginx/miniapis"
-    if os.path.exists(nginx_miniapis_dir):
+    # ===== VERIFICACAO 2: BACKEND (metadata.json) =====
+    # Itera todas as APIs deployadas e verifica seus metadados
+    miniapis_dir = "/opt/app/api/miniapis"
+    if os.path.exists(miniapis_dir):
         try:
-            for conf_file in os.listdir(nginx_miniapis_dir):
-                conf_path = os.path.join(nginx_miniapis_dir, conf_file)
-                if os.path.isfile(conf_path):
+            for api_name in os.listdir(miniapis_dir):
+                api_dir = os.path.join(miniapis_dir, api_name)
+                if not os.path.isdir(api_dir):
+                    continue
+                if api_name == "tmp":
+                    continue
+                metadata_path = os.path.join(api_dir, "metadata.json")
+                if os.path.exists(metadata_path):
                     try:
-                        with open(conf_path, "r") as f:
-                            content = f.read()
-                            # Procura pela rota no arquivo nginx
-                            if f"location {path}" in content or f"location /{path}" in content:
+                        with open(metadata_path, "r") as f:
+                            metadata = json.load(f)
+                            if metadata.get("url_completa", "").rstrip('/') == url_check:
                                 return True
-                    except (IOError, OSError):
+                    except (json.JSONDecodeError, IOError):
                         continue
         except (OSError, Exception):
             pass
@@ -338,6 +342,19 @@ def criar_miniapi(
         _deploy_root(nome, porta, rota_db, os.path.join(cur_link, "app"), dominio_final)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
+
+    # Salvar metadata.json com a URL completa
+    metadata = {
+        "nome": nome,
+        "dominio": dominio_final,
+        "rota": rota_db,
+        "url_completa": url_completa,
+        "porta": porta,
+        "deployed_at": datetime.utcnow().isoformat() + "Z"
+    }
+    metadata_path = os.path.join(obj_dir, "metadata.json")
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
 
     return MiniApiOut(
         nome=nome,
