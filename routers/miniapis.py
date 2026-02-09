@@ -307,4 +307,4 @@ def criar_miniapi(
         rota=rota_db,
         porta=porta,
         url_completa=url_comp,
-    
+    )
