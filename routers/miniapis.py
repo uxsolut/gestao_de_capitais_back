@@ -48,6 +48,7 @@ def _find_free_port() -> int:
     """Encontra uma porta livre no pool configurado"""
     for p in range(PORT_START, PORT_END + 1):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("0.0.0.0", p))
                 s.close()
