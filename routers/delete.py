@@ -220,38 +220,26 @@ def _delete_backend(nome: str) -> dict:
 # =========================================================
 def _find_frontend_by_path(dominio: str, path_parts: list) -> Optional[dict]:
     """
-    Procura por um frontend no filesystem que corresponda ao path.
+    Procura por um frontend no filesystem que corresponda EXATAMENTE ao path.
     
     Exemplos:
       - /vinagre/linguamaneiralegalbacana-3-a/14/ → procura em /var/www/pages/gestordecapitais.com/vinagre/linguamaneiralegalbacana-3-a/14/
     
-    Retorna dict com {path_completo, nome_url, nome, versao} se encontrar, None caso contrário.
+    Retorna dict com {path_completo, partes} se encontrar EXATAMENTE, None caso contrário.
     """
     if not path_parts:
         return None
     
-    # Tenta construir o path completo
+    # Constrói o path completo esperado
     domain_dir = os.path.join(PAGES_DIR, dominio)
-    
-    if not os.path.isdir(domain_dir):
-        return None
-    
-    # Tenta o path completo
     full_path = os.path.join(domain_dir, *path_parts)
+    
+    # Verifica se existe EXATAMENTE
     if os.path.isdir(full_path):
         return {
             "path_completo": full_path,
             "partes": path_parts,
         }
-    
-    # Tenta caminhos parciais (em caso de path_parts ter mais níveis)
-    for i in range(len(path_parts), 0, -1):
-        partial_path = os.path.join(domain_dir, *path_parts[:i])
-        if os.path.isdir(partial_path):
-            return {
-                "path_completo": partial_path,
-                "partes": path_parts[:i],
-            }
     
     return None
 
