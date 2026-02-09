@@ -250,11 +250,8 @@ async def criar_frontend(
             detail="Versão inválida. Use 1-20 caracteres: letras, números, pontos, hífen, underscore."
         )
 
-    if _nome_exists(nome):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Nome '{nome}' já existe. Escolha outro nome único."
-        )
+    # Validação de nome único REMOVIDA
+    # Agora só importa se a URL completa já existe, não o nome isolado
 
     # === LÊ E VALIDA O ZIP ===
     zip_bytes = await arquivo.read()

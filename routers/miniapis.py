@@ -235,11 +235,8 @@ def criar_miniapi(
             detail="Nome inválido. Use 3-50 caracteres: letras, números, hífen, underscore"
         )
     
-    if _api_name_exists(nome):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Nome '{nome}' já existe. Escolha outro nome único."
-        )
+    # Validação de nome único REMOVIDA
+    # Agora só importa se a URL completa já existe, não o nome isolado
     
     # === VALIDAÇÃO DOS NOVOS PARÂMETROS ===
     if dominio and dominio not in DOMINIOS_PERMITIDOS:
