@@ -24,7 +24,7 @@ MINIAPIS_DIR = "/opt/app/api/miniapis"
 
 # Domínios permitidos
 DOMINIOS_PERMITIDOS = [
-    "pinacle.com.br",
+    "pinacle.com.br",,
     "gestordecapitais.com",
     "tetramusic.com.br",
     "grupoaguiarbrasil.com",
