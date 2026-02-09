@@ -1,14 +1,17 @@
 # routers/miniapis.py
 # -*- coding: utf-8 -*-
+"""
+Deploy de mini-APIs — sistema independente, SEM banco de dados.
+
+Aceita ZIP com app/main.py (Python, Node.js, Go, Java, Rust)
+e publica em porta aleatória (9200-9699)
+"""
 import os, io, zipfile, shutil, socket, subprocess, json, re
 from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import text
-
-from database import engine
 
 router = APIRouter(prefix="/miniapis", tags=["Mini APIs"])
 
@@ -23,13 +26,12 @@ PORT_END   = int(os.getenv("MINIAPIS_PORT_END",   "9699"))
 FIXED_DEPLOY_DOMAIN = "pinacle.com.br"
 PUBLIC_SCHEME = "https"
 
-# Lista de domínios permitidos (adicione seus domínios aqui)
+# Lista de domínios permitidos
 DOMINIOS_PERMITIDOS = [
     "pinacle.com.br",
     "gestordecapitais.com",
     "tetramusic.com.br",
     "grupoaguiarbrasil.com",
-    # Adicione outros domínios aqui
 ]
 
 def _ensure_dirs():
@@ -73,23 +75,14 @@ def _validate_api_name(name: str) -> bool:
 def _validate_nome_url(name: str) -> bool:
     """Valida nome_url: apenas letras, números, hífen e underscore (pode ser vazio)"""
     if not name:
-        return True  # Vazio é permitido
+        return True
     return bool(re.match(r"^[a-zA-Z0-9_-]{1,50}$", name))
 
 def _validate_versao(versao: str) -> bool:
     """Valida versão: apenas números e pontos (pode ser vazio)"""
     if not versao:
-        return True  # Vazio é permitido
+        return True
     return bool(re.match(r"^[a-zA-Z0-9._-]{1,20}$", versao))
-
-def _api_name_exists(name: str) -> bool:
-    """Verifica se nome da API já existe no banco"""
-    with engine.begin() as conn:
-        res = conn.execute(text("""
-            SELECT COUNT(*) FROM global.aplicacoes
-            WHERE slug = :slug
-        """), {"slug": name})
-        return res.scalar_one() > 0
 
 def _venv_install(app_dir: str):
     """Instala dependências do projeto (suporta Python, Node.js, Java, Go, Rust)"""
@@ -134,55 +127,17 @@ def _deploy_root(api_name: str, port: int, route: str, workdir_app: str, dominio
 
 class MiniApiOut(BaseModel):
     """Modelo de resposta para criação de mini-API"""
-    slug: str
+    nome: str
     dominio: str
     rota: str
     porta: int
     url_completa: Optional[str] = None
 
-def _insert_backend_row_initial(
-    slug: str,
-    arquivo_zip_bytes: bytes,
-) -> int:
-    """
-    Insert inicial: cria registro com slug e arquivo ZIP
-    """
-    with engine.begin() as conn:
-        res = conn.execute(text("""
-            INSERT INTO global.aplicacoes
-              (front_ou_back, dominio, slug, arquivo_zip, url_completa,
-               estado, id_empresa, precisa_logar, anotacoes,
-               dados_de_entrada, tipos_de_retorno,
-               rota, porta, servidor, tipo_api)
-            VALUES
-              (:front_ou_back, :dominio, :slug, :arquivo_zip, NULL,
-               NULL, NULL, false, NULL,
-               NULL, NULL,
-               NULL, NULL, NULL, NULL)
-            RETURNING id
-        """), {
-            "front_ou_back": "backend",
-            "dominio": None,
-            "slug": slug,
-            "arquivo_zip": arquivo_zip_bytes,
-        })
-        return res.scalar_one()
-
-def _update_after_deploy(id_: int, rota: str, porta: int, url: str):
-    """Atualiza rota, porta e URL após deploy bem-sucedido"""
-    with engine.begin() as conn:
-        conn.execute(text("""
-            UPDATE global.aplicacoes
-               SET rota=:rota, porta=:porta, url_completa=:url
-             WHERE id=:id
-        """), {"rota": rota, "porta": str(porta), "url": url, "id": id_})
-
 @router.post("/", response_model=MiniApiOut, status_code=status.HTTP_201_CREATED,
              summary="Criar mini-backend (ZIP) e publicar")
 def criar_miniapi(
     arquivo: UploadFile = File(..., description="ZIP com app/main.py (Python) ou equivalente em outra linguagem"),
-    nome: str = Form(..., description="Nome único da API (3-50 caracteres: letras, números, hífen, underscore)"),
-    # NOVOS PARÂMETROS PARA URL DINÂMICA
+    nome: str = Form(..., description="Nome da API (3-50 caracteres: letras, números, hífen, underscore)"),
     dominio: str = Form(default="pinacle.com.br", description="Domínio customizado (ex: gestordecapitais.com)"),
     nome_url: str = Form(default="", description="Nome URL (ex: vitor) - opcional"),
     versao: str = Form(default="", description="Versão da API (ex: 1, v1, 2.0) - opcional"),
@@ -191,14 +146,12 @@ def criar_miniapi(
     Cria e publica uma mini-API a partir de um arquivo ZIP.
     
     Fluxo:
-      1) Valida nome da API (único, formato válido)
-      2) INSERT inicial em global.aplicacoes com slug
-      3) Aloca porta aleatória (9200-9699)
-      4) Extrai release e prepara ambiente (detecta linguagem automaticamente)
-      5) Instala dependências (Python/Node.js/Java/Go/Rust)
-      6) Faz deploy (Nginx + systemd)
-      7) UPDATE com rota, porta e URL
-      8) Retorna URL completa para acesso
+      1) Valida nome da API (formato válido)
+      2) Aloca porta aleatória (9200-9699)
+      3) Extrai release e prepara ambiente (detecta linguagem automaticamente)
+      4) Instala dependências (Python/Node.js/Java/Go/Rust)
+      5) Faz deploy (Nginx + systemd)
+      6) Retorna URL completa para acesso
       
     Aceita qualquer tipo de backend:
       - Python: requirements.txt
@@ -235,10 +188,7 @@ def criar_miniapi(
             detail="Nome inválido. Use 3-50 caracteres: letras, números, hífen, underscore"
         )
     
-    # Validação de nome único REMOVIDA
-    # Agora só importa se a URL completa já existe, não o nome isolado
-    
-    # === VALIDAÇÃO DOS NOVOS PARÂMETROS ===
+    # === VALIDAÇÃO DOS PARÂMETROS ===
     if dominio and dominio not in DOMINIOS_PERMITIDOS:
         raise HTTPException(
             status_code=400,
@@ -264,15 +214,7 @@ def criar_miniapi(
     zip_bytes = arquivo.file.read()
     _write_bytes(zip_path, zip_bytes)
 
-    # 1) Insert inicial
-    new_id = _insert_backend_row_initial(
-        slug=nome,
-        arquivo_zip_bytes=zip_bytes,
-    )
-
-    # 2) Construir rota dinamicamente
-    # Se nome_url e versao foram informados, usa URL customizada
-    # Senão, usa URL padrão /miniapi/{nome}
+    # 1) Construir rota dinamicamente
     if nome_url and versao:
         rota_db = f"/{nome_url}/{nome}/{versao}"
     elif nome_url:
@@ -285,10 +227,10 @@ def criar_miniapi(
     # Usar domínio customizado ou padrão
     dominio_final = dominio if dominio else FIXED_DEPLOY_DOMAIN
 
-    # 3) Porta aleatória
+    # 2) Porta aleatória
     porta = _find_free_port()
 
-    # 4) Extrai release definitivo e prepara app
+    # 3) Extrai release definitivo e prepara app
     obj_dir = os.path.join(BASE_DIR, nome)
     release_dir = os.path.join(obj_dir, "releases", datetime.utcnow().strftime("%Y%m%d-%H%M%S"))
     cur_link = os.path.join(obj_dir, "current")
@@ -314,18 +256,17 @@ def criar_miniapi(
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha ao instalar dependências: {e}")
 
-    # deploy (systemd + nginx) - passa a rota e domínio customizado
+    # deploy (systemd + nginx)
     try:
         _deploy_root(nome, porta, rota_db, os.path.join(cur_link, "app"), dominio_final)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
 
-    # 5) Atualiza url completa com domínio customizado
+    # Construir URL completa
     url_comp = f"{PUBLIC_SCHEME}://{dominio_final}{rota_db}"
-    _update_after_deploy(new_id, rota_db, porta, url_comp)
 
     return MiniApiOut(
-        slug=nome,
+        nome=nome,
         dominio=dominio_final,
         rota=rota_db,
         porta=porta,
