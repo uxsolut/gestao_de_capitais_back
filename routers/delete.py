@@ -357,25 +357,7 @@ async def deletar_url(request: DeleteRequest):
             detail=f"Domínio '{dominio}' não permitido. Domínios válidos: {', '.join(DOMINIOS_PERMITIDOS)}"
         )
     
-    # Procura por backend
-    backend_nome = _find_backend_by_path(path_parts)
-    if backend_nome:
-        result = _delete_backend(backend_nome)
-        
-        if result["sucesso"]:
-            return DeleteResponse(
-                sucesso=True,
-                tipo="backend",
-                mensagem=f"Backend '{backend_nome}' deletado com sucesso",
-                detalhes=result.get("detalhes"),
-            )
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Erro ao deletar backend: {result.get('erro')}"
-            )
-    
-    # Procura por frontend
+    # PRIORIDADE 1: Procura por frontend PRIMEIRO
     frontend_info = _find_frontend_by_path(dominio, path_parts)
     if frontend_info:
         result = _delete_frontend(frontend_info["path_completo"], frontend_info["partes"])
@@ -391,6 +373,24 @@ async def deletar_url(request: DeleteRequest):
             raise HTTPException(
                 status_code=500,
                 detail=f"Erro ao deletar frontend: {result.get('erro')}"
+            )
+    
+    # PRIORIDADE 2: Procura por backend
+    backend_nome = _find_backend_by_path(path_parts)
+    if backend_nome:
+        result = _delete_backend(backend_nome)
+        
+        if result["sucesso"]:
+            return DeleteResponse(
+                sucesso=True,
+                tipo="backend",
+                mensagem=f"Backend '{backend_nome}' deletado com sucesso",
+                detalhes=result.get("detalhes"),
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Erro ao deletar backend: {result.get('erro')}"
             )
     
     # Nada encontrado
