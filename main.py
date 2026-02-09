@@ -50,6 +50,7 @@ from routers import page_meta as r_page_meta
 from routers import media as r_media  # <<< ADICIONADO
 from routers import email as email_router
 from routers.frontends import router as frontends_router
+from routers.delete import router as delete_router
 
 # --- Watchdog (apenas para o modo write) ---
 from background.token_watchdog import start_token_watchdog, stop_token_watchdog
@@ -168,6 +169,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(email_router.router)
         app.include_router(assinaturas.router)
         app.include_router(contatos.router)
+        app.include_router(delete_router)
 
     elif mode == "all":
         app.include_router(users.router)
@@ -192,6 +194,7 @@ def create_app(mode: str = "all") -> FastAPI:
         app.include_router(email_router.router)
         app.include_router(assinaturas.router)
         app.include_router(contatos.router)
+        app.include_router(delete_router)
 
         from routers import processamento, consumo_processamento
         app.include_router(processamento.router, prefix="/api/v1", tags=["Processamento"])
