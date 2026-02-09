@@ -23,7 +23,7 @@ PUBLIC_SCHEME = "https"
 MINIAPIS_DIR = "/opt/app/api/miniapis"
 
 # Domínios permitidos
-DOMINIOS_PERMITIDOS = [
+DOMINIOS_PERMITIDOS = 
     "pinacle.com.br",
     "gestordecapitais.com",
     "tetramusic.com.br",
