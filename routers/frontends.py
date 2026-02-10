@@ -154,7 +154,7 @@ def _url_exists_exact(url_completa: str) -> bool:
                 if api_name == "tmp":
                     continue
                 
-                metadata_path = os.path.join(api_dir, "current/app/metadata.json")
+                metadata_path = os.path.join(api_dir, "metadata.json")
                 if os.path.exists(metadata_path):
                     try:
                         with open(metadata_path, "r") as f:
