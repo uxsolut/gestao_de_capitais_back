@@ -6,7 +6,7 @@ Deploy de mini-APIs — sistema independente, SEM banco de dados.
 Aceita ZIP com app/main.py (Python, Node.js, Go, Java, Rust)
 e publica em porta aleatória (9200-9699)
 """
-import os, io, zipfile, shutil, socket, subprocess, json, re
+import os, io, zipfile, shutil, socket, subprocess, json, re, hashlib
 from datetime import datetime
 from typing import Optional, List
 
@@ -84,6 +84,17 @@ def _validate_versao(versao: str) -> bool:
     if not versao:
         return True
     return bool(re.match(r"^[a-zA-Z0-9._-]{1,20}$", versao))
+
+def _get_url_hash(url_completa: str) -> str:
+    """
+    Gera um hash único baseado na URL COMPLETA.
+    
+    CORREÇÃO: Cada URL é uma URL diferente!
+    - Mesma URL = mesmo hash
+    - URL diferente (nem que seja 1 letra) = hash diferente
+    - Sem colisão entre backends
+    """
+    return hashlib.md5(url_completa.encode()).hexdigest()
 
 def _venv_install(app_dir: str):
     """Instala dependências do projeto (suporta Python, Node.js, Java, Go, Rust)"""
@@ -224,6 +235,9 @@ def criar_miniapi(
     
     # Construir URL completa EXATA
     url_completa = f"{PUBLIC_SCHEME}://{dominio_final}{rota_db}"
+    
+    # CORREÇÃO FINAL: Gerar hash único baseado na URL COMPLETA
+    url_hash = _get_url_hash(url_completa)
 
     # Lê arquivo ZIP
     rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))
@@ -236,7 +250,8 @@ def criar_miniapi(
     porta = _find_free_port()
 
     # 3) Extrai release definitivo e prepara app
-    obj_dir = os.path.join(BASE_DIR, nome)
+    # CORREÇÃO FINAL: Usar hash da URL como identificador, não o "nome"
+    obj_dir = os.path.join(BASE_DIR, url_hash)
     release_dir = os.path.join(obj_dir, "releases", datetime.utcnow().strftime("%Y%m%d-%H%M%S"))
     cur_link = os.path.join(obj_dir, "current")
     app_dir = os.path.join(release_dir, "app")
@@ -263,7 +278,7 @@ def criar_miniapi(
 
     # deploy (systemd + nginx)
     try:
-        _deploy_root(nome, porta, rota_db, os.path.join(cur_link, "app"), dominio_final)
+        _deploy_root(url_hash, porta, rota_db, os.path.join(cur_link, "app"), dominio_final)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"Falha no deploy: {e}")
 
