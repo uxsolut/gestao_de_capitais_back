@@ -128,7 +128,8 @@ def _delete_backend(nome: str) -> dict:
     1. Para systemd service
     2. Remove APENAS o diretório deste backend
     3. Remove Nginx config
-    4. Remove entrada do banco de dados
+    4. Recarrega nginx
+    5. Remove entrada do banco de dados
     
     CORREÇÃO: Remove apenas este backend, não afeta outros!
     """
@@ -203,10 +204,10 @@ def _delete_backend(nome: str) -> dict:
             except Exception:
                 pass
         
-        # 6. Reload Nginx
+        # 6. Reload Nginx (CORRIGIDO!)
         try:
             subprocess.run(
-                ["sudo", "nginx", "-s", "reload"],
+                ["sudo", "systemctl", "reload", "nginx"],  # ✅ CORRETO!
                 capture_output=True,
                 timeout=10,
             )
