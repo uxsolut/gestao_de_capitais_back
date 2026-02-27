@@ -7,13 +7,14 @@ Dois endpoints separados:
   - POST /delete/frontend/ → deleta frontend
   - POST /delete/backend/ → deleta backend
 
-CORREÇÃO: Cada URL é independente. Deletar uma URL não afeta outras.
+CORREÇÃO FINAL: Cada URL é completamente independente!
 - Frontend: Remove apenas o index.html do diretório especificado
-- Backend: Remove apenas o diretório especificado, não afeta outros backends
+- Backend: Procura pela URL COMPLETA no metadata.json e deleta APENAS aquele backend
 """
 import os
 import re
 import subprocess
+import json
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -75,33 +76,48 @@ def _parse_url(url: str) -> dict:
 # =========================================================
 #                    HELPERS - BACKEND
 # =========================================================
-def _find_backend_by_path(path_parts: list) -> Optional[str]:
+def _find_backend_by_url_completa(url_para_deletar: str) -> Optional[str]:
     """
-    Procura por um backend no filesystem que corresponda ao path.
+    Procura por um backend procurando pela URL COMPLETA no metadata.json.
     
-    Exemplos:
-      - /miniapi/minha-api → procura por "minha-api" em /opt/app/api/miniapis/
-      - /vinagre/linguamaneiralegalbacana-3-a/14/ → procura por "linguamaneiralegalbacana-3-a"
+    CORREÇÃO FINAL: Cada URL é completamente independente!
+    - /blabla/par/papi/ é diferente de /juninho/par/papi/
+    - Mesmo que terminem igual, são backends diferentes
     
-    Retorna o nome do backend se encontrar, None caso contrário.
+    Procura em TODOS os metadata.json e encontra qual tem:
+    "url_completa": "{url_para_deletar}"
+    
+    Retorna o nome do backend (pasta) se encontrar, None caso contrário.
     """
-    if not path_parts:
-        return None
+    url_para_deletar = url_para_deletar.rstrip("/")
     
-    # Se for /miniapi/{nome}, o nome está em path_parts[1]
-    if len(path_parts) >= 2 and path_parts[0] == "miniapi":
-        nome = path_parts[1]
-        backend_dir = os.path.join(MINIAPIS_BASE_DIR, nome)
-        if os.path.isdir(backend_dir):
-            return nome
-        return None
+    try:
+        # Procura em todos os diretórios em /opt/app/api/miniapis/
+        for pasta_nome in os.listdir(MINIAPIS_BASE_DIR):
+            pasta_path = os.path.join(MINIAPIS_BASE_DIR, pasta_nome)
+            
+            # Pula se não for diretório
+            if not os.path.isdir(pasta_path):
+                continue
+            
+            # Procura pelo metadata.json
+            metadata_path = os.path.join(pasta_path, "metadata.json")
+            if not os.path.exists(metadata_path):
+                continue
+            
+            try:
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                
+                # Verifica se a URL completa bate
+                url_completa_no_arquivo = metadata.get("url_completa", "").rstrip("/")
+                if url_completa_no_arquivo == url_para_deletar:
+                    return pasta_nome
+            except Exception:
+                continue
     
-    # Caso contrário, procura em todos os path_parts
-    # Tenta encontrar uma pasta em /opt/app/api/miniapis/ que corresponda
-    for part in path_parts:
-        backend_dir = os.path.join(MINIAPIS_BASE_DIR, part)
-        if os.path.isdir(backend_dir):
-            return part
+    except Exception:
+        pass
     
     return None
 
@@ -412,7 +428,9 @@ async def deletar_backend(request: DeleteRequest):
     """
     Apaga um backend ESPECÍFICO a partir de uma URL.
     
-    Cada URL é independente. Deletar uma URL não afeta outras.
+    Cada URL é completamente independente!
+    - /blabla/par/papi/ é diferente de /juninho/par/papi/
+    - Mesmo que terminem igual, são backends diferentes
     
     Exemplos:
       POST /pnapi/delete/backend/
@@ -423,7 +441,7 @@ async def deletar_backend(request: DeleteRequest):
       ou
       
       {
-        "url": "https://gestordecapitais.com/vinagre/linguamaneiralegalbacana-3-a/14/"
+        "url": "https://pinacle.com.br/juninho/par/papi/"
       }
     """
     
@@ -436,10 +454,10 @@ async def deletar_backend(request: DeleteRequest):
             detail=f"URL inválida: {e}"
         )
     
-    path_parts = parsed["partes"]
+    url_para_deletar = request.url.rstrip("/")
     
-    # Procura por backend
-    backend_nome = _find_backend_by_path(path_parts)
+    # Procura por backend pela URL COMPLETA no metadata.json
+    backend_nome = _find_backend_by_url_completa(url_para_deletar)
     if not backend_nome:
         raise HTTPException(
             status_code=404,
@@ -453,7 +471,7 @@ async def deletar_backend(request: DeleteRequest):
         return DeleteResponse(
             sucesso=True,
             tipo="backend",
-            mensagem=f"Backend '{backend_nome}' deletado com sucesso",
+            mensagem=f"Backend deletado com sucesso",
             detalhes=result.get("detalhes"),
         )
     else:
