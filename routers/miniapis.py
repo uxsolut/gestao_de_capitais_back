@@ -5,11 +5,6 @@ Deploy de mini-APIs — sistema independente, SEM banco de dados.
 
 Aceita ZIP com app/main.py (Python, Node.js, Go, Java, Rust)
 e publica em porta aleatória (9200-9699)
-
-VALIDAÇÃO DE URLs:
-- Antes de fazer deploy, verifica se a URL completa já existe
-- Procura em frontend (/var/www/pages) e backend (nginx + systemd)
-- Se encontrar, retorna erro 409 (Conflict) e não faz deploy
 """
 import os, io, zipfile, shutil, socket, subprocess, json, re
 from datetime import datetime
@@ -90,69 +85,6 @@ def _validate_versao(versao: str) -> bool:
         return True
     return bool(re.match(r"^[a-zA-Z0-9._-]{1,20}$", versao))
 
-def _url_exists_exact(url_completa: str) -> bool:
-    """
-    Verifica se a URL INTEIRA já existe no servidor.
-    
-    Procura em dois lugares:
-    1. Frontend: /var/www/pages/{dominio}/{path}
-    2. Backend: Lê nginx configs e systemd services
-    
-    Retorna:
-    - True: URL já existe (não fazer deploy)
-    - False: URL não existe (pode fazer deploy)
-    """
-    # Remove trailing slash para normalização
-    url_check = url_completa.rstrip('/')
-    
-    # Extrai dominio e path da URL
-    # URL format: https://dominio/path
-    if url_check.startswith("https://"):
-        url_without_scheme = url_check[8:]  # Remove "https://"
-    elif url_check.startswith("http://"):
-        url_without_scheme = url_check[7:]  # Remove "http://"
-    else:
-        url_without_scheme = url_check
-    
-    # Separa dominio do path
-    if "/" in url_without_scheme:
-        dominio, path = url_without_scheme.split("/", 1)
-    else:
-        dominio = url_without_scheme
-        path = ""
-    
-    # ===== VERIFICAÇÃO 1: FRONTEND =====
-    # Procura em /var/www/pages/{dominio}/{path}
-    if path:
-        frontend_path = os.path.join(PAGES_DIR, dominio, path)
-        if os.path.exists(frontend_path):
-            return True
-    
-    # ===== VERIFICACAO 2: BACKEND (metadata.json) =====
-    # Itera todas as APIs deployadas e verifica seus metadados
-    miniapis_dir = "/opt/app/api/miniapis"
-    if os.path.exists(miniapis_dir):
-        try:
-            for api_name in os.listdir(miniapis_dir):
-                api_dir = os.path.join(miniapis_dir, api_name)
-                if not os.path.isdir(api_dir):
-                    continue
-                if api_name == "tmp":
-                    continue
-                metadata_path = os.path.join(api_dir, "metadata.json")
-                if os.path.exists(metadata_path):
-                    try:
-                        with open(metadata_path, "r") as f:
-                            metadata = json.load(f)
-                            if metadata.get("url_completa", "").rstrip('/') == url_check:
-                                return True
-                    except (json.JSONDecodeError, IOError):
-                        continue
-        except (OSError, Exception):
-            pass
-    
-    return False
-
 def _venv_install(app_dir: str):
     """Instala dependências do projeto (suporta Python, Node.js, Java, Go, Rust)"""
     venv_dir = os.path.join(os.path.dirname(app_dir), ".venv")
@@ -217,12 +149,11 @@ def criar_miniapi(
     Fluxo:
       1) Valida nome da API (formato válido)
       2) Constrói URL completa
-      3) **VERIFICA se URL já existe no servidor**
-      4) Aloca porta aleatória (9200-9699)
-      5) Extrai release e prepara ambiente (detecta linguagem automaticamente)
-      6) Instala dependências (Python/Node.js/Java/Go/Rust)
-      7) Faz deploy (Nginx + systemd)
-      8) Retorna URL completa para acesso
+      3) Aloca porta aleatória (9200-9699)
+      4) Extrai release e prepara ambiente (detecta linguagem automaticamente)
+      5) Instala dependências (Python/Node.js/Java/Go/Rust)
+      6) Faz deploy (Nginx + systemd)
+      7) Retorna URL completa para acesso
       
     Aceita qualquer tipo de backend:
       - Python: requirements.txt
@@ -293,13 +224,6 @@ def criar_miniapi(
     
     # Construir URL completa EXATA
     url_completa = f"{PUBLIC_SCHEME}://{dominio_final}{rota_db}"
-    
-    # === VERIFICA SE URL INTEIRA JÁ EXISTE ===
-    if _url_exists_exact(url_completa):
-        raise HTTPException(
-            status_code=409,
-            detail=f"URL já existe no servidor. Não é possível criar: {url_completa}"
-        )
 
     # Lê arquivo ZIP
     rel_dir = os.path.join(BASE_DIR, "tmp", datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f"))

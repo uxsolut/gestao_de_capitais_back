@@ -5,11 +5,6 @@ Deploy de frontends estáticos — sistema independente, SEM banco de dados.
 
 Aceita qualquer ZIP com index.html (HTML, React, Vue, Angular, Flutter pré-compilado, etc.)
 e publica em /var/www/pages/{dominio}/{nome_url}/{nome}/{versao}/
-
-VALIDAÇÃO DE URLs:
-- Antes de fazer deploy, verifica se a URL completa já existe
-- Procura em frontend (/var/www/pages) e backend (metadata.json)
-- Se encontrar, retorna erro 409 (Conflict) e não faz deploy
 """
 import os, zipfile, shutil, subprocess, re, json
 from datetime import datetime
@@ -101,77 +96,6 @@ def _validate_zip(zip_bytes: bytes) -> bool:
         return False
 
 
-def _url_exists_exact(url_completa: str) -> bool:
-    """
-    Verifica se a URL INTEIRA já existe em frontend OU backend.
-    
-    Procura em dois lugares:
-    1. Frontend: /var/www/pages/{dominio}/{path}
-    2. Backend: Lê metadata.json de todas as APIs deployadas em /opt/app/api/miniapis/
-    
-    Retorna:
-    - True: URL já existe (não fazer deploy)
-    - False: URL não existe (pode fazer deploy)
-    """
-    # Remove trailing slash para normalização
-    url_check = url_completa.rstrip('/')
-    
-    # Extrai dominio e path da URL
-    # URL format: https://dominio/path
-    if url_check.startswith("https://"):
-        url_without_scheme = url_check[8:]  # Remove "https://"
-    elif url_check.startswith("http://"):
-        url_without_scheme = url_check[7:]  # Remove "http://"
-    else:
-        url_without_scheme = url_check
-    
-    # Separa dominio do path
-    if "/" in url_without_scheme:
-        dominio, path = url_without_scheme.split("/", 1)
-    else:
-        dominio = url_without_scheme
-        path = ""
-    
-    # ===== VERIFICAÇÃO 1: FRONTEND =====
-    # Procura em frontend: /var/www/pages/{dominio}/{path}
-    if path:
-        frontend_path = os.path.join(PAGES_DIR, dominio, path)
-        if os.path.exists(frontend_path):
-            return True
-    
-    # ===== VERIFICAÇÃO 2: BACKEND =====
-    # Itera todas as APIs deployadas e verifica seus metadados
-    if os.path.exists(MINIAPIS_DIR):
-        try:
-            for api_name in os.listdir(MINIAPIS_DIR):
-                api_dir = os.path.join(MINIAPIS_DIR, api_name)
-                
-                # Ignora se não é diretório
-                if not os.path.isdir(api_dir):
-                    continue
-                
-                # Ignora diretório "tmp"
-                if api_name == "tmp":
-                    continue
-                
-                metadata_path = os.path.join(api_dir, "metadata.json")
-                if os.path.exists(metadata_path):
-                    try:
-                        with open(metadata_path, "r") as f:
-                            metadata = json.load(f)
-                            # Compara URL completa normalizada
-                            if metadata.get("url_completa", "").rstrip('/') == url_check:
-                                return True
-                    except (json.JSONDecodeError, IOError):
-                        # Se não conseguir ler metadados, continua
-                        continue
-        except (OSError, Exception):
-            # Se não conseguir listar diretório, continua
-            pass
-    
-    return False
-
-
 # =========================================================
 #                    MODELO DE RESPOSTA
 # =========================================================
@@ -203,10 +127,9 @@ async def criar_frontend(
     Fluxo:
       1) Valida parâmetros (nome, domínio, nome_url, versão)
       2) Constrói URL completa
-      3) **VERIFICA se URL já existe em frontend ou backend**
-      4) Salva ZIP temporariamente
-      5) Chama frontend-deploy.sh (extrai ZIP e publica em /var/www/pages/)
-      6) Retorna URL completa para acesso
+      3) Salva ZIP temporariamente
+      4) Chama frontend-deploy.sh (extrai ZIP e publica em /var/www/pages/)
+      5) Retorna URL completa para acesso
 
     Aceita qualquer frontend estático:
       - HTML puro (index.html na raiz)
@@ -266,13 +189,6 @@ async def criar_frontend(
     # === CONSTRÓI URL E ROTA ===
     url_completa = _build_url(dominio, nome_url, nome, versao)
     rota = _build_rota(nome_url, nome, versao)
-    
-    # === VERIFICA SE URL INTEIRA JÁ EXISTE (FRONTEND OU BACKEND) ===
-    if _url_exists_exact(url_completa):
-        raise HTTPException(
-            status_code=409,
-            detail=f"URL já existe no servidor. Não é possível criar: {url_completa}"
-        )
 
     # === SALVA ZIP TEMPORÁRIO ===
     os.makedirs(TMP_DIR, exist_ok=True)
