@@ -176,8 +176,10 @@ def _delete_backend(nome: str) -> dict:
         else:
             detalhes["directory_not_found"] = True
         
-        # 4. Remove Nginx config
-        nginx_conf = f"/etc/nginx/sites-available/miniapi-{nome}.conf"
+        # 4. Remove Nginx config (CORRIGIDO: arquivo está em /etc/nginx/miniapis/)
+        # O arquivo nginx está em /etc/nginx/miniapis/{hash}.conf
+        # NÃO em /etc/nginx/sites-available/ ou /etc/nginx/sites-enabled/
+        nginx_conf = f"/etc/nginx/miniapis/{nome}.conf"
         if os.path.exists(nginx_conf):
             try:
                 subprocess.run(
@@ -189,20 +191,8 @@ def _delete_backend(nome: str) -> dict:
                 detalhes["nginx_config_deleted"] = True
             except Exception as e:
                 detalhes["nginx_config_delete_error"] = str(e)
-        
-        # 5. Remove symlink em sites-enabled
-        nginx_enabled = f"/etc/nginx/sites-enabled/miniapi-{nome}.conf"
-        if os.path.islink(nginx_enabled):
-            try:
-                subprocess.run(
-                    ["sudo", "rm", "-f", nginx_enabled],
-                    capture_output=True,
-                    timeout=10,
-                    check=True,
-                )
-                detalhes["nginx_enabled_deleted"] = True
-            except Exception:
-                pass
+        else:
+            detalhes["nginx_config_not_found"] = True
         
         # 6. Reload Nginx (CORRIGIDO!)
         try:
