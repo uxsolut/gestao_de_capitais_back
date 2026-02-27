@@ -137,7 +137,11 @@ def _delete_backend(nome: str) -> dict:
     
     try:
         # 1. Para systemd service
-        service_name = f"miniapi-{nome}.service"
+        # CORRIGIDO: O serviço usa hash abreviado (primeiros 8 caracteres)
+        # Hash completo: 470c146cbe9a89f03ccf7e7b9559e384
+        # Nome do serviço: miniapi-470c146c.service (primeiros 8 caracteres)
+        hash_abreviado = nome[:8] if len(nome) > 8 else nome
+        service_name = f"miniapi-{hash_abreviado}.service"
         try:
             subprocess.run(
                 ["sudo", "systemctl", "stop", service_name],
