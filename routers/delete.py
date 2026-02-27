@@ -6,6 +6,10 @@ API para apagar/limpar URLs de backend ou frontend.
 Dois endpoints separados:
   - POST /delete/frontend/ → deleta frontend
   - POST /delete/backend/ → deleta backend
+
+CORREÇÃO: Cada URL é independente. Deletar uma URL não afeta outras.
+- Frontend: Remove apenas o index.html do diretório especificado
+- Backend: Remove apenas o diretório especificado, não afeta outros backends
 """
 import os
 import re
@@ -104,11 +108,13 @@ def _find_backend_by_path(path_parts: list) -> Optional[str]:
 
 def _delete_backend(nome: str) -> dict:
     """
-    Deleta backend:
+    Deleta backend ESPECÍFICO:
     1. Para systemd service
-    2. Remove diretório em /opt/app/api/miniapis/{nome}
+    2. Remove APENAS o diretório deste backend
     3. Remove Nginx config
     4. Remove entrada do banco de dados
+    
+    CORREÇÃO: Remove apenas este backend, não afeta outros!
     """
     detalhes = {}
     
@@ -136,7 +142,8 @@ def _delete_backend(nome: str) -> dict:
         except Exception:
             pass
         
-        # 3. Remove diretório
+        # 3. Remove APENAS o diretório deste backend
+        # NÃO remove diretórios pais ou outros backends
         app_dir = os.path.join(MINIAPIS_BASE_DIR, nome)
         if os.path.exists(app_dir):
             try:
@@ -246,31 +253,48 @@ def _find_frontend_by_path(dominio: str, path_parts: list) -> Optional[dict]:
 
 def _delete_frontend(path_completo: str, partes: list) -> dict:
     """
-    Deleta frontend:
-    1. Remove diretório em /var/www/pages/{dominio}/{path}/
-    2. Remove entrada do banco de dados
+    Deleta frontend ESPECÍFICO:
+    1. Remove APENAS o index.html do diretório especificado
+    2. Remove diretório se ficar vazio
+    3. Remove entrada do banco de dados
+    
+    CORREÇÃO: Cada URL é independente!
+    - Deletar /vi/banana/ não afeta /vi/banana/na/
+    - Deletar /vi/banana/na/ não afeta /vi/banana/
+    - Subdirectórios continuam existindo
     """
     detalhes = {}
     
     try:
         detalhes["path"] = path_completo
         
-        # Remove diretório
-        if os.path.exists(path_completo):
+        # 1. Remove APENAS o index.html do diretório especificado
+        # NÃO remove subdirectórios
+        index_path = os.path.join(path_completo, "index.html")
+        if os.path.exists(index_path):
             try:
                 subprocess.run(
-                    ["sudo", "rm", "-rf", path_completo],
+                    ["sudo", "rm", "-f", index_path],  # Remove APENAS o arquivo
                     capture_output=True,
-                    timeout=30,
+                    timeout=10,
                     check=True,
                 )
-                detalhes["directory_deleted"] = True
+                detalhes["index_deleted"] = True
             except Exception as e:
-                detalhes["directory_delete_error"] = str(e)
+                detalhes["index_delete_error"] = str(e)
         else:
-            detalhes["directory_not_found"] = True
+            detalhes["index_not_found"] = True
         
-        # Remove do banco de dados (tenta por slug - último part do path)
+        # 2. Tenta remover o diretório APENAS se estiver vazio
+        # Se tiver subdirectórios, deixa intacto
+        try:
+            os.rmdir(path_completo)  # Remove APENAS se vazio
+            detalhes["directory_deleted"] = True
+        except OSError:
+            # Se não vazio (tem subdirectórios), deixa como está
+            detalhes["directory_has_subdirectories"] = True
+        
+        # 3. Remove do banco de dados (tenta por slug - último part do path)
         if partes:
             slug = partes[-1]  # Usa o último part como slug
             try:
@@ -300,10 +324,12 @@ def _delete_frontend(path_completo: str, partes: list) -> dict:
 #                    ENDPOINT: DELETE FRONTEND
 # =========================================================
 @router.post("/frontend/", response_model=DeleteResponse, status_code=status.HTTP_200_OK,
-             summary="Apagar/limpar um frontend")
+             summary="Apagar/limpar um frontend específico")
 async def deletar_frontend(request: DeleteRequest):
     """
-    Apaga um frontend a partir de uma URL.
+    Apaga um frontend ESPECÍFICO a partir de uma URL.
+    
+    Cada URL é independente. Deletar uma URL não afeta outras.
     
     Exemplo:
       POST /pnapi/delete/frontend/
@@ -360,10 +386,12 @@ async def deletar_frontend(request: DeleteRequest):
 #                    ENDPOINT: DELETE BACKEND
 # =========================================================
 @router.post("/backend/", response_model=DeleteResponse, status_code=status.HTTP_200_OK,
-             summary="Apagar/limpar um backend")
+             summary="Apagar/limpar um backend específico")
 async def deletar_backend(request: DeleteRequest):
     """
-    Apaga um backend a partir de uma URL.
+    Apaga um backend ESPECÍFICO a partir de uma URL.
+    
+    Cada URL é independente. Deletar uma URL não afeta outras.
     
     Exemplos:
       POST /pnapi/delete/backend/
