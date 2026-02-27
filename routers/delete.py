@@ -251,16 +251,34 @@ def _find_frontend_by_path(dominio: str, path_parts: list) -> Optional[dict]:
     return None
 
 
+def _has_subdirectories(path: str) -> bool:
+    """
+    Verifica se um diretório tem subdirectórios.
+    
+    Retorna:
+    - True: tem subdirectórios
+    - False: não tem subdirectórios (está vazio ou tem apenas arquivos)
+    """
+    try:
+        for item in os.listdir(path):
+            item_path = os.path.join(path, item)
+            if os.path.isdir(item_path):
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def _delete_frontend(path_completo: str, partes: list) -> dict:
     """
     Deleta frontend ESPECÍFICO:
     1. Remove APENAS o index.html do diretório especificado
-    2. Remove diretório se ficar vazio
+    2. Remove diretório APENAS se estiver vazio (sem subdirectórios)
     3. Remove entrada do banco de dados
     
     CORREÇÃO: Cada URL é independente!
-    - Deletar /vi/banana/ não afeta /vi/banana/na/
-    - Deletar /vi/banana/na/ não afeta /vi/banana/
+    - Deletar /vitoria/legal/ não afeta /vitoria/legal/la/
+    - Deletar /vitoria/legal/la/ não afeta /vitoria/legal/
     - Subdirectórios continuam existindo
     """
     detalhes = {}
@@ -285,14 +303,17 @@ def _delete_frontend(path_completo: str, partes: list) -> dict:
         else:
             detalhes["index_not_found"] = True
         
-        # 2. Tenta remover o diretório APENAS se estiver vazio
-        # Se tiver subdirectórios, deixa intacto
-        try:
-            os.rmdir(path_completo)  # Remove APENAS se vazio
-            detalhes["directory_deleted"] = True
-        except OSError:
-            # Se não vazio (tem subdirectórios), deixa como está
+        # 2. Verifica se tem subdirectórios
+        if _has_subdirectories(path_completo):
+            # Se tem subdirectórios, NÃO remove o diretório
             detalhes["directory_has_subdirectories"] = True
+        else:
+            # Se NÃO tem subdirectórios, tenta remover o diretório vazio
+            try:
+                os.rmdir(path_completo)  # Remove APENAS se vazio
+                detalhes["directory_deleted"] = True
+            except OSError as e:
+                detalhes["directory_delete_error"] = str(e)
         
         # 3. Remove do banco de dados (tenta por slug - último part do path)
         if partes:
